@@ -1,0 +1,35 @@
+{
+  "alpha_min": 0.1,
+  "alpha_max": 1,
+  "alpha_step": 0.05,
+  "b_min": 1,
+  "b_max": 9,
+  "k_max": 256,
+  "convergence": 1e-6,
+  "W": 32,
+  "S_trans": 128,
+  "S_slot": 4,
+  "applications": {
+    "sss": {
+      "kernel_dir": "../../set-similarity-search/",
+      "executable": "sss",
+      "kernel_name": "set_similarity_search_kernel"
+    },
+    "ir": {
+      "kernel_dir": "../../information-retrieval/hierarchical/",
+      "executable": "ir",
+      "kernel_name": "information_retrieval_kernel"
+    },
+    "tc": {
+      "kernel_dir": "../../triangle-count/hierarchical/",
+      "executable": "tc",
+      "kernel_name": "triangle_count_kernel"
+    }
+  },
+  "datasets": {
+    "sss": "../../graph_datasets",
+    "ir": "../../ir-datasets",
+    "tc": "../../graph_datasets"
+  },
+  "colomn_map": {}
+}

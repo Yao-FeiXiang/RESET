@@ -1,0 +1,23 @@
+{
+    "paths": {
+        "bcsr_dir": "/data4/cliu26/arabic-2005/bcsr",
+        "work_dir": "/data4/cliu26/arabic-2005",
+        "bin_dir": "bin",
+        "log_dir": "logs"
+    },
+    "bcsr": {
+        "block_nodes": 65536
+    },
+    "partition": {
+        "num_parts": 64,
+        "step": 10007
+    },
+    "pipeline": {
+        "mode": "sss",
+        "chunk_edges": 5000000
+    },
+    "runtime": {
+        "workers": 8,
+        "verbose": true
+    }
+}

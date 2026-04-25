@@ -1,0 +1,67 @@
+{
+    "app": {
+        "name": "sss",
+        "executable": "../../sss/sss",
+        "dataset_root": "../../graph_datasets",
+        "output_dir": "./output"
+    },
+    "experiment": {
+        "alpha": 0.2,
+        "bucket": 5
+    },
+    "ncu": {
+        "tmp_dir": "~/ncu_tmp",
+        "metrics_map": {
+            "gpu__time_duration.sum": "GPU_duration_ms",
+            "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadReq",
+            "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadSectors"
+        },
+        "launch_skip": 0,
+        "launch_count": 1
+    },
+    "methods": [
+        {
+            "method_name": "普通哈希",
+            "output_tag": "普通哈希",
+            "kernel_name": "sss_kernel",
+            "is_original": true
+        },
+        {
+            "method_name": "分层哈希",
+            "output_tag": "分层哈希",
+            "kernel_name": "sss_kernel",
+            "is_original": true
+        },
+        {
+            "method_name": "cuCollections",
+            "output_tag": "cuCollections",
+            "kernel_name": "sss_cuco_kernel",
+            "is_original": false
+        },
+        {
+            "method_name": "布谷鸟哈希",
+            "output_tag": "布谷鸟哈希",
+            "kernel_name": "sss_cuckoo_kernel",
+            "is_original": false
+        },
+        {
+            "method_name": "跳房子哈希",
+            "output_tag": "跳房子哈希",
+            "kernel_name": "sss_hopscotch_kernel",
+            "is_original": false
+        },
+        {
+            "method_name": "咆哮位图",
+            "output_tag": "咆哮位图",
+            "kernel_name": "sss_roaring_kernel",
+            "is_original": false
+        }
+    ],
+    "robustness": {
+        "command_timeout_seconds": 60,
+        "max_retries": 3
+    },
+    "logging": {
+        "log_dir": "./logs"
+    }
+}

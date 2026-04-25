@@ -1,0 +1,743 @@
+#include <sstream>
+#include <string>
+#include <math.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <cooperative_groups.h>
+#include "hash_table_hie.cuh"
+#include "subgraph_match_hie.cuh"
+
+using namespace cooperative_groups;
+// using namespace std;
+//  h : height of subtree; h = pattern vertex number
+__inline__ __device__ bool checkDuplicate(int *mapping, int &level, int item)
+{
+    for (int i = 0; i < level; i++)
+        if (mapping[i] == item)
+            return true;
+    return false;
+}
+__inline__ __device__ bool checkRestriction(int *mapping, int &level, int item, int *restriction) // 返回true表示违背限制
+{
+#ifdef withDuplicate
+    if (restriction[level] == -1)
+    {
+        for (int i = 0; i < level; i++)
+            if (mapping[i] == item)
+                return true;
+    }
+#endif
+#ifdef withRestriction
+    if (restriction[level] == -1)
+        return false;
+    if (item < mapping[restriction[level]])
+        return false;
+    return true;
+#else
+    return false;
+#endif
+}
+
+__inline__ __device__ void loadNextVertex(int &start_index, int &this_chunk_index_end, int *G_INDEX, int &lid, int &chunk_size, int &process_num)
+{
+    start_index += process_num;
+    if (start_index == this_chunk_index_end)
+    {
+        if (lid == 0)
+        {
+            start_index = atomicAdd(G_INDEX, chunk_size * process_num);
+        }
+        start_index = __shfl_sync(FULL_MASK, start_index, 0);
+        this_chunk_index_end = start_index + chunk_size * process_num;
+    }
+}
+
+__global__ void DFSKernelForClique(int *reuse, int process_id, int process_num, int chunk_size, int index_length, int bucket_size, long long bucket_num, int max_degree, int *subgraph_adj, int *subgraph_offset, int *restriction, int *degree_offset, int *adjcant, long long *hash_tables_offset, int *hash_tables, int *vertex, int *candidates_of_all_warp, unsigned long long *sum, int *G_INDEX, int max_length, int *d_dispersed_mapping)
+{
+    int wid = (blockIdx.x * blockDim.x + threadIdx.x) / 32; // warpid
+    int lid = threadIdx.x % 32;                             // landid
+    int next_candidate_array[H];                            // 该层下一个候选
+    int candidate_number_array[H];                          // 记录一下每一层保存的数据大小
+    int mapping[H];                                         // 记录每次的中间结果
+    int *my_candidates_for_all_mapping = candidates_of_all_warp + (long long)wid * H * max_degree;
+    // int my_count = 0;
+    // __shared__ int shared_count;
+    unsigned long long my_count = 0;
+    __shared__ unsigned long long shared_count;
+    if (threadIdx.x == 0)
+        shared_count = 0;
+    int start_index = wid * chunk_size * process_num + process_id;
+    int this_chunk_index_end = start_index + chunk_size * process_num;
+    int level;
+    // each warp process a subtree
+    for (; start_index < index_length; loadNextVertex(start_index, this_chunk_index_end, G_INDEX, lid, chunk_size, process_num))
+    {
+#ifdef useVertexAsStart
+        mapping[0] = start_index;
+        level = 0;
+#else
+        mapping[0] = vertex[start_index];
+        mapping[1] = adjcant[start_index];
+        level = 1;
+        if (checkRestriction(mapping, level, mapping[1], restriction))
+            continue;
+#endif
+        for (;;)
+        {
+            level++;
+            int &candidate_number = candidate_number_array[level];
+            next_candidate_array[level] = -1;
+            candidate_number = 0;
+            int subgraph_adj_start;
+            int min_degree_vertex;
+            int min_degree;
+            int subgraph_degree;
+            int *neighbor_list_of_min_degree_vertex;
+            if (reuse[level] == -1)
+            {
+                // find possible connection and maintain in S
+                subgraph_adj_start = subgraph_offset[level - 1];
+                subgraph_degree = subgraph_offset[level] - subgraph_adj_start;
+                // get degree
+                min_degree_vertex = mapping[subgraph_adj[subgraph_adj_start]];
+                int cur_degree;
+                min_degree = degree_offset[min_degree_vertex + 1] - degree_offset[min_degree_vertex];
+                for (int i = 1; i < subgraph_degree; i++)
+                {
+                    cur_degree = degree_offset[mapping[subgraph_adj[subgraph_adj_start + i]] + 1] - degree_offset[mapping[subgraph_adj[subgraph_adj_start + i]]];
+                    if (cur_degree < min_degree)
+                    {
+                        min_degree_vertex = mapping[subgraph_adj[subgraph_adj_start + i]];
+                        min_degree = cur_degree;
+                    }
+                }
+                neighbor_list_of_min_degree_vertex = adjcant + degree_offset[min_degree_vertex];
+            }
+            else
+            {
+                // find possible connection and maintain in S
+                subgraph_adj_start = subgraph_offset[level - 1];
+                subgraph_degree = subgraph_offset[level] - subgraph_adj_start;
+                min_degree = candidate_number_array[reuse[level]];
+                min_degree_vertex = -1;
+                neighbor_list_of_min_degree_vertex = my_candidates_for_all_mapping + reuse[level] * max_degree;
+            }
+            // if (mapping[0] == 0 && mapping[1] == 1 && lid == 0)
+            // printf("level : %d min_degree = %d \n", level, min_degree);
+            // Start intersection, load neighbor of m1 into my_candidates
+            int *my_wirttern_candidates = my_candidates_for_all_mapping + level * max_degree;
+            int processing_vertex_in_map;
+
+            // 要做交集，则不抄出来,记录一下这个neighbour list所在的位置
+            if (subgraph_degree == 1 && reuse[level] == -1)
+                for (int i = lid; i < min_degree; i += 32)
+                {
+                    my_wirttern_candidates[i] = neighbor_list_of_min_degree_vertex[i];
+                }
+            if (subgraph_degree == 1 && reuse[level] != -1)
+            {
+                if (level < H - 1)
+                    for (int i = lid; i < candidate_number_array[reuse[level]]; i += 32)
+                    {
+                        my_wirttern_candidates[i] = neighbor_list_of_min_degree_vertex[i];
+                    }
+                else
+                {
+                    for (int i = lid; i < candidate_number_array[reuse[level]]; i += 32)
+                    {
+                        // printf("level : %d reuse[level] : %d", level, reuse[level]);
+                        if (!checkRestriction(mapping, level, neighbor_list_of_min_degree_vertex[i], restriction))
+                        {
+                            my_count += 1;
+                            // printf("my count : %d", my_count);
+                        }
+                    }
+                }
+            }
+            // if (mapping[0] == 0 && mapping[1] == 1 && lid == 0)
+            // printf("min_degree_vertex : %d min_degree : %d level : %d reuse[level] : %d candidate_number_array[level - 1] : %d\n", min_degree_vertex, min_degree, level, reuse[level], candidate_number_array[level - 1]);
+            // intersect
+            candidate_number = min_degree;
+            int *my_read_candidates;
+            if (reuse[level] == -1)
+                my_read_candidates = neighbor_list_of_min_degree_vertex;
+            else
+                my_read_candidates = my_candidates_for_all_mapping + reuse[level] * max_degree;
+            for (int j = 0, is_not_last = subgraph_degree - 2; j < subgraph_degree; j++)
+            {
+                processing_vertex_in_map = mapping[subgraph_adj[subgraph_adj_start + j]];
+                if (processing_vertex_in_map == min_degree_vertex || subgraph_adj[subgraph_adj_start + j] == -1)
+                    continue;
+                int *cur_hashtable = hash_tables + hash_tables_offset[processing_vertex_in_map];
+                int len = int(hash_tables_offset[processing_vertex_in_map + 1] - hash_tables_offset[processing_vertex_in_map]); // len记录当前hash_table的长度
+
+                int candidate_number_previous = candidate_number;
+                candidate_number = 0;
+                if (level < H - 1 || is_not_last)
+                {
+                    for (int i = lid; i < candidate_number_previous; i += 32)
+                    {
+                        int item = my_read_candidates[i];
+                        int is_exist = search_in_hashtable(item, bucket_size, bucket_num, len, cur_hashtable, max_length, d_dispersed_mapping);
+                        // 使用 prefix sum 计算写入位置，保持原顺序
+                        unsigned int active_mask = __activemask();
+                        unsigned int mask = __ballot_sync(active_mask, is_exist);
+                        int prefix = __popc(mask & ((1u << lid) - 1));
+                        if (is_exist)
+                        {
+                            my_wirttern_candidates[candidate_number + prefix] = item;
+                        }
+                        candidate_number += __popc(mask);
+                    }
+                }
+                else
+                {
+                    for (int i = lid; i < candidate_number_previous; i += 32)
+                    {
+                        int item = my_read_candidates[i];
+                        int is_exist = search_in_hashtable(item, bucket_size, bucket_num, len, cur_hashtable, max_length, d_dispersed_mapping);
+                        if (!checkRestriction(mapping, level, item, restriction))
+                        {
+                            my_count += is_exist;
+                        }
+                    }
+                }
+                candidate_number = __shfl_sync(FULL_MASK, candidate_number, 0);
+                my_read_candidates = my_wirttern_candidates;
+                is_not_last--;
+            }
+            if (level == H - 1)
+            {
+                // if (lid == 0)
+                // {
+                //     my_count += candidate_number;
+                // }
+                level--;
+            }
+            for (;; level--)
+            {
+                if (level == break_level)
+                    break;
+                next_candidate_array[level]++;
+                while (checkRestriction(mapping, level, my_candidates_for_all_mapping[level * max_degree + next_candidate_array[level]], restriction) && next_candidate_array[level] < candidate_number_array[level])
+                {
+                    next_candidate_array[level]++;
+                }
+                if (next_candidate_array[level] < candidate_number_array[level])
+                {
+                    mapping[level] = my_candidates_for_all_mapping[level * max_degree + next_candidate_array[level]];
+                    break;
+                }
+            }
+            if (level == break_level)
+                break;
+        }
+    }
+    // my_count = __reduce_add_sync(FULL_MASK, my_count);
+    // if (lid == 0)
+    // {
+    atomicAdd(&shared_count, my_count);
+    __syncthreads();
+    if (threadIdx.x == 0)
+        atomicAdd(sum, shared_count);
+    // }
+}
+
+__global__ void DFSKernelForGeneral(int process_id, int process_num, int chunk_size, int index_length, int bucket_size, long long bucket_num, int max_degree, int *subgraph_adj, int *subgraph_offset, int *restriction, int *degree_offset, int *adjcant, long long *hash_tables_offset, int *hash_tables, int *vertex, int *candidates_of_all_warp, unsigned long long *sum, int *G_INDEX, int max_length, int *d_dispersed_mapping)
+{
+    int wid = (blockIdx.x * blockDim.x + threadIdx.x) / 32; // warpid
+    int lid = threadIdx.x % 32;                             // landid
+    int next_candidate_array[H];                            // 记录一下每一层保存的数据大小
+    // int candidate_number[H];
+    int mapping[H]; // 记录每次的中间结果
+    int *my_candidates_for_all_mapping = candidates_of_all_warp + (long long)wid * H * max_degree;
+    int my_count = 0;
+    __shared__ int shared_count;
+    if (threadIdx.x == 0)
+        shared_count = 0;
+    int start_index = wid * chunk_size * process_num + process_id;
+    int this_chunk_index_end = start_index + chunk_size * process_num;
+    int level;
+    // if (lid == 0 && wid == 0)
+    // each warp process a subtree
+    for (; start_index < index_length; loadNextVertex(start_index, this_chunk_index_end, G_INDEX, lid, chunk_size, process_num))
+    {
+#ifdef useVertexAsStart
+        mapping[0] = start_index;
+        level = 0;
+#else
+        mapping[0] = vertex[start_index];
+        mapping[1] = adjcant[start_index];
+        level = 1;
+        if (checkRestriction(mapping, level, mapping[1], restriction))
+            continue;
+#endif
+        for (;;)
+        {
+            level++;
+            int candidate_number;
+            candidate_number = 0;
+            // find possible connection and maintain in S
+            int subgraph_adj_start = subgraph_offset[level - 1];
+            int subgraph_degree = subgraph_offset[level] - subgraph_adj_start;
+            // get degree
+            int min_degree;
+            int min_degree_vertex = mapping[subgraph_adj[subgraph_adj_start]];
+            int cur_degree;
+            min_degree = degree_offset[min_degree_vertex + 1] - degree_offset[min_degree_vertex];
+            for (int i = 1; i < subgraph_degree; i++)
+            {
+                cur_degree = degree_offset[mapping[subgraph_adj[subgraph_adj_start + i]] + 1] - degree_offset[mapping[subgraph_adj[subgraph_adj_start + i]]];
+                if (cur_degree < min_degree)
+                {
+                    min_degree_vertex = mapping[subgraph_adj[subgraph_adj_start + i]];
+                    min_degree = cur_degree;
+                }
+            }
+            // Start intersection, load neighbor of m1 into my_candidates
+            int *my_wirttern_candidates = my_candidates_for_all_mapping + level * max_degree;
+            int processing_vertex_in_map;
+            int *neighbor_list_of_min_degree_vertex = adjcant + degree_offset[min_degree_vertex];
+
+            // 要做交集，则不抄出来,记录一下这个neighbour list所在的位置
+            if (subgraph_degree == 1)
+            {
+                if (level == H - 1)
+                {
+                    for (int i = lid; i < min_degree; i += 32)
+                    {
+                        if (!checkRestriction(mapping, level, neighbor_list_of_min_degree_vertex[i], restriction))
+                            my_count++;
+                    }
+                }
+                else
+                {
+                    for (int i = lid; i < min_degree; i += 32)
+                    {
+                        my_wirttern_candidates[i] = neighbor_list_of_min_degree_vertex[i];
+                    }
+                }
+            }
+            // intersect
+            candidate_number = min_degree;
+            int *my_read_candidates = neighbor_list_of_min_degree_vertex;
+            for (int j = 0, is_not_last = subgraph_degree - 2; j < subgraph_degree; j++)
+            {
+                processing_vertex_in_map = mapping[subgraph_adj[subgraph_adj_start + j]];
+                if (processing_vertex_in_map == min_degree_vertex)
+                    continue;
+                int *cur_hashtable = hash_tables + hash_tables_offset[processing_vertex_in_map];
+                int len = int(hash_tables_offset[processing_vertex_in_map + 1] - hash_tables_offset[processing_vertex_in_map]); // len记录当前hash_table的长度
+
+                int candidate_number_previous = candidate_number;
+                candidate_number = 0;
+                if (level < H - 1 || is_not_last)
+                {
+                    for (int i = lid; i < candidate_number_previous; i += 32)
+                    {
+                        int item = my_read_candidates[i];
+                        int is_exist = search_in_hashtable(item, bucket_size, bucket_num, len, cur_hashtable, max_length, d_dispersed_mapping);
+                        // 使用 prefix sum 计算写入位置，保持原顺序
+                        unsigned int active_mask = __activemask();
+                        unsigned int mask = __ballot_sync(active_mask, is_exist);
+                        int prefix = __popc(mask & ((1u << lid) - 1));
+                        if (is_exist)
+                        {
+                            my_wirttern_candidates[candidate_number + prefix] = item;
+                        }
+                        candidate_number += __popc(mask);
+                    }
+                }
+                else
+                {
+                    for (int i = lid; i < candidate_number_previous; i += 32)
+                    {
+                        int item = my_read_candidates[i];
+                        int is_exist = search_in_hashtable(item, bucket_size, bucket_num, len, cur_hashtable, max_length, d_dispersed_mapping);
+                        if (!checkRestriction(mapping, level, item, restriction))
+                        {
+                            my_count += is_exist;
+                        }
+                    }
+                }
+                candidate_number = __shfl_sync(FULL_MASK, candidate_number, 0);
+                my_read_candidates = my_wirttern_candidates;
+                is_not_last--;
+            }
+            next_candidate_array[level] = candidate_number;
+            if (level == H - 1)
+            {
+                // if (lid == 0)
+                // {
+                //     my_count += candidate_number;
+                // }
+                level--;
+            }
+            for (;; level--)
+            {
+                if (level == break_level)
+                    break;
+                next_candidate_array[level]--;
+                while (checkRestriction(mapping, level, my_candidates_for_all_mapping[level * max_degree + next_candidate_array[level]], restriction) && next_candidate_array[level] >= 0)
+                {
+                    next_candidate_array[level]--;
+                }
+                if (next_candidate_array[level] > -1)
+                {
+                    mapping[level] = my_candidates_for_all_mapping[level * max_degree + next_candidate_array[level]];
+                    break;
+                }
+            }
+            if (level == break_level)
+                break;
+        }
+    }
+    // my_count = __reduce_add_sync(FULL_MASK, my_count);
+    // if (lid == 0)
+    // {
+    atomicAdd(&shared_count, my_count);
+    __syncthreads();
+    if (threadIdx.x == 0)
+        atomicAdd(sum, shared_count);
+    // }
+}
+
+
+__global__ void extract_adjcant_from_hashtable_kernel(
+    int num_nodes, int *degree_offset, long long *hash_tables_offset,
+    int *hash_tables, long long bucket_num, int bucket_size,
+    int *new_adjcant, int *reverse_mapping)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int warp_id = tid / 32;
+    int lane_id = tid % 32;
+
+    if (warp_id >= num_nodes)
+        return;
+
+    int u = warp_id;
+    int offset_start = degree_offset[u];
+    int degree = degree_offset[u + 1] - offset_start;
+    if (degree == 0)
+        return;
+
+    long long ht_offset_ll = hash_tables_offset[u];
+    int length = (int)(hash_tables_offset[u + 1] - hash_tables_offset[u]);
+    int *ht = hash_tables + static_cast<size_t>(ht_offset_ll);
+
+    int write_pos = 0;
+    int total_slots = length * bucket_size;
+    int num_iters = (total_slots + 31) / 32;
+
+    for (int iter = 0; iter < num_iters; iter++)
+    {
+        int i = lane_id + iter * 32;
+        int is_valid = 0;
+        int val = -1;
+        if (i < total_slots)
+        {
+            int b = i / bucket_size;
+            int s = i % bucket_size;
+            val = ht[b + s * bucket_num];
+            if (val != -1)
+                is_valid = 1;
+        }
+
+        unsigned int mask = 0xffffffffu;
+        int sum = is_valid;
+        for (int offset = 1; offset < 32; offset *= 2)
+        {
+            int n = __shfl_up_sync(mask, sum, offset);
+            if (lane_id >= offset)
+                sum += n;
+        }
+        int local_offset = sum - is_valid;
+        int total_valid = __shfl_sync(mask, sum, 31);
+
+        if (is_valid)
+            new_adjcant[offset_start + write_pos + local_offset] = reverse_mapping[val];
+
+        write_pos += total_valid;
+    }
+}
+
+static void gpu_extract_adjcant_from_hashtable(
+    int node_num, int *d_degree_offset, long long *d_hash_tables_offset,
+    int *d_hash_tables, long long bucket_num, int bucket_size,
+    int *d_adjcant_hierarchical, int *d_reverse_mapping)
+{
+    int warp_count = node_num;
+    const int extract_block = 128;
+    int extract_grid = (warp_count * 32 + extract_block - 1) / extract_block;
+    extract_adjcant_from_hashtable_kernel<<<extract_grid, extract_block>>>(
+        node_num, d_degree_offset, d_hash_tables_offset, d_hash_tables,
+        bucket_num, bucket_size, d_adjcant_hierarchical, d_reverse_mapping);
+    HRR(cudaGetLastError());
+}
+
+struct l2flush
+{
+    __forceinline__ l2flush()
+    {
+        int dev_id{};
+        (cudaGetDevice(&dev_id));
+        (cudaDeviceGetAttribute(&m_l2_size, cudaDevAttrL2CacheSize, dev_id));
+        if (m_l2_size > 0)
+        {
+            void *buffer = m_l2_buffer;
+            (cudaMalloc(&buffer, m_l2_size));
+            m_l2_buffer = reinterpret_cast<int *>(buffer);
+        }
+    }
+
+    __forceinline__ ~l2flush()
+    {
+        if (m_l2_buffer)
+        {
+            (cudaFree(m_l2_buffer));
+        }
+    }
+
+    __forceinline__ void flush(cudaStream_t stream)
+    {
+        if (m_l2_size > 0)
+        {
+            (cudaMemsetAsync(m_l2_buffer, 0, m_l2_size, stream));
+        }
+    }
+
+private:
+    int m_l2_size{};
+    int *m_l2_buffer{};
+};
+
+int gcd(int a, int b)
+{
+    while (b)
+    {
+        int temp = b;
+        b = a % b;
+        a = temp;
+    }
+    return a;
+}
+
+vector<int> createDispersedMapping(int n, vector<int> &reverse_mapping)
+{
+    vector<int> mapping(n);
+
+    // Find a step size that is coprime with n
+    // Start with a large prime-like number
+    int step = 10007;
+    while (gcd(step, n) != 1)
+    {
+        step++;
+    }
+
+    // Create permutation: perm[i] = (i * step) % n
+    // This guarantees uniform distribution and complete scrambling
+    for (int i = 0; i < n; i++)
+    {
+        mapping[i] = ((long long)i * step) % n;
+        mapping[i] = ((long long)mapping[i] * step) % n; // double shuffle for better randomness
+        reverse_mapping[mapping[i]] = i;
+    }
+
+    printf("Created coprime dispersed mapping: step=%d (gcd=%d), completely scrambled\n",
+           step, gcd(step, n));
+    return mapping;
+}
+
+struct arguments SubgraphMatching(int process_id, int process_num, struct arguments args, char *argv[])
+{
+    int deviceCount = 0;
+    cudaError_t ec = cudaGetDeviceCount(&deviceCount);
+    if (ec != cudaSuccess || deviceCount <= 0)
+    {
+        fprintf(stderr, "cudaGetDeviceCount failed: %s\n", cudaGetErrorString(ec));
+        exit(1);
+    }
+    int dev = process_id % deviceCount;
+    cudaError_t e = cudaSetDevice(dev);
+    if (e != cudaSuccess)
+    {
+        fprintf(stderr, "cudaSetDevice(%d) failed (%d GPUs visible): %s\n", dev, deviceCount,
+                cudaGetErrorString(e));
+        exit(1);
+    }
+    cudaDeviceProp prop{};
+    e = cudaGetDeviceProperties(&prop, dev);
+    if (e != cudaSuccess)
+    {
+        fprintf(stderr, "cudaGetDeviceProperties(%d) failed: %s\n", dev, cudaGetErrorString(e));
+        exit(1);
+    }
+    printf("Using device %d: %s\n", dev, prop.name);
+    string Infilename = argv[1];
+    string pattern = argv[2];
+    load_factor = atof(argv[4]);
+    bucket_size = atoi(argv[5]);
+    block_size = atoi(argv[6]);
+    block_number = atoi(argv[7]);
+    chunk_size = atoi(argv[8]);
+
+    int *d_adjcant, *d_vertex, *d_degree_offset;
+    int max_degree;
+    tie(d_adjcant, d_vertex, d_degree_offset, max_degree) = loadGraphWithName(Infilename, pattern);
+    // printGpuInfo();
+    printf("max degree is : %d\n", max_degree);
+
+    int total_edges;
+    cudaMemcpy(&total_edges, d_degree_offset + vertex_count, sizeof(int), cudaMemcpyDeviceToHost);
+    int *d_adjcant_hierarchical;
+    cudaMalloc(&d_adjcant_hierarchical, sizeof(int) * total_edges);
+
+    int *d_hash_tables_hierarchical;
+    long long *d_hash_tables_offset;
+    long long bucket_num;
+    int max_length;
+
+    vector<int> reverse_mapping(vertex_count);
+    vector<int> dispersed_mapping = createDispersedMapping(vertex_count, reverse_mapping);
+    int *d_dispersed_mapping;
+    cudaMalloc(&d_dispersed_mapping, sizeof(int) * vertex_count);
+    cudaMemcpy(d_dispersed_mapping, dispersed_mapping.data(), sizeof(int) * vertex_count, cudaMemcpyHostToDevice);
+
+    int *d_reverse_mapping;
+    HRR(cudaMalloc(&d_reverse_mapping, sizeof(int) * vertex_count));
+    HRR(cudaMemcpy(d_reverse_mapping, reverse_mapping.data(), sizeof(int) * vertex_count, cudaMemcpyHostToDevice));
+
+    double build_time;
+    tie(d_hash_tables_offset, d_hash_tables_hierarchical, bucket_num, max_length,build_time) = buildHashTable(d_adjcant, d_vertex, d_degree_offset, d_dispersed_mapping);
+    printf("finish make hash table\n");
+    printf("build time (GPU insert kernel only) is : %f ms\n", build_time * 1000.0);
+
+    double scan_time;
+    cudaEvent_t ev_s0, ev_s1;
+    HRR(cudaEventCreate(&ev_s0));
+    HRR(cudaEventCreate(&ev_s1));
+    HRR(cudaEventRecord(ev_s0));
+    gpu_extract_adjcant_from_hashtable(vertex_count, d_degree_offset, d_hash_tables_offset,
+                                       d_hash_tables_hierarchical, bucket_num, bucket_size,
+                                       d_adjcant_hierarchical, d_reverse_mapping);
+    HRR(cudaEventRecord(ev_s1));
+    HRR(cudaEventSynchronize(ev_s1));
+    float scan_ms = 0.f;
+    HRR(cudaEventElapsedTime(&scan_ms, ev_s0, ev_s1));
+    HRR(cudaEventDestroy(ev_s0));
+    HRR(cudaEventDestroy(ev_s1));
+    scan_time = (double)scan_ms / 1000.0;
+    printf("scan time (GPU extract kernel) is : %f ms\n", scan_time * 1000.0);
+    HRR(cudaFree(d_reverse_mapping));
+
+
+    int *d_ir; // intermediate result;
+    // refine the malloc
+    HRR(cudaMalloc(&d_ir, (long long)216 * 32 * max_degree * H * sizeof(int)));
+
+    // cout << "ir memory size is : " << 216 * 32 * max_degree * H * sizeof(int) / 1024 / 1024 << "MB" << endl;
+
+    int *d_intersection_orders;
+    HRR(cudaMalloc(&d_intersection_orders, intersection_size * sizeof(int)));
+    HRR(cudaMemcpy(d_intersection_orders, intersection_orders, intersection_size * sizeof(int), cudaMemcpyHostToDevice));
+    int *d_intersection_offset;
+    HRR(cudaMalloc(&d_intersection_offset, intersection_size * sizeof(int)));
+    HRR(cudaMemcpy(d_intersection_offset, intersection_offset, intersection_size * sizeof(int), cudaMemcpyHostToDevice));
+    int *d_restriction;
+    HRR(cudaMalloc(&d_restriction, restriction_size * sizeof(int)));
+    HRR(cudaMemcpy(d_restriction, restriction, restriction_size * sizeof(int), cudaMemcpyHostToDevice));
+    int *d_reuse;
+    HRR(cudaMalloc(&d_reuse, H * sizeof(int)));
+    HRR(cudaMemcpy(d_reuse, reuse, H * sizeof(int), cudaMemcpyHostToDevice));
+    int *G_INDEX;
+    HRR(cudaMalloc(&G_INDEX, sizeof(int)));
+
+    unsigned long long *d_sum;
+    HRR(cudaMalloc(&d_sum, sizeof(unsigned long long)));
+    HRR(cudaMemset(d_sum, 0, sizeof(unsigned long long)));
+    // double start_time = wtime();
+
+    double cmp_time;
+    double max_time = 0;
+    double min_time = 1000;
+    double ave_time = 0;
+
+    long long sum1 = 0;
+    long long sum2 = 0;
+    l2flush();
+    cudaDeviceSynchronize();
+
+    cudaEvent_t ev_k0, ev_k1;
+    HRR(cudaEventCreate(&ev_k0));
+    HRR(cudaEventCreate(&ev_k1));
+
+    // hierarchical
+    HRR(cudaMemset(d_sum, 0, sizeof(unsigned long long)));
+    for (; process_id < process_num; process_id += deviceCount)
+    {
+        int temp = block_size * block_number / 32 * chunk_size * process_num + process_id;
+        HRR(cudaMemcpy(G_INDEX, &temp, sizeof(int), cudaMemcpyHostToDevice));
+        printf("start kernel\n");
+        int length;
+#ifdef useVertexAsStart
+        length = vertex_count;
+#else
+        length = edge_count;
+#endif
+        HRR(cudaEventRecord(ev_k0));
+        if (pattern.compare("Q5") == 0 || pattern.compare("Q7") == 0 || pattern.compare("Q3") == 0 || pattern.compare("Q0") == 0 || pattern.compare("Q4") == 0 || pattern.compare("Q6") == 0 || pattern.compare("Q8") == 0)
+        {
+            DFSKernelForClique<<<block_size, block_number>>>(d_reuse, process_id, process_num, chunk_size, length, bucket_size, bucket_num, max_degree, d_intersection_orders, d_intersection_offset, d_restriction, d_degree_offset, d_adjcant_hierarchical, d_hash_tables_offset, d_hash_tables_hierarchical, d_vertex, d_ir, d_sum, G_INDEX, max_length, d_dispersed_mapping);
+        }
+        else
+        {
+            DFSKernelForGeneral<<<block_size, block_number>>>(process_id, process_num, chunk_size, length, bucket_size, bucket_num, max_degree, d_intersection_orders, d_intersection_offset, d_restriction, d_degree_offset, d_adjcant_hierarchical, d_hash_tables_offset, d_hash_tables_hierarchical, d_vertex, d_ir, d_sum, G_INDEX, max_length, d_dispersed_mapping);
+        }
+        HRR(cudaEventRecord(ev_k1));
+        HRR(cudaEventSynchronize(ev_k1));
+        float kernel_ms = 0.f;
+        HRR(cudaEventElapsedTime(&kernel_ms, ev_k0, ev_k1));
+        cmp_time = (double)kernel_ms / 1000.0;
+        if (cmp_time > max_time)
+            max_time = cmp_time;
+        if (cmp_time < min_time)
+            min_time = cmp_time;
+        ave_time += cmp_time;
+        printf("finish kernel\n");
+        // cout << "this time" << cmp_time << ' ' << max_time << endl;
+        HRR(cudaFree(d_ir));
+        HRR(cudaMalloc(&d_ir, (long long)216 * 32 * max_degree * H * sizeof(int)));
+
+        cudaMemcpy(&sum2, d_sum, sizeof(long long), cudaMemcpyDeviceToHost);
+        std::cout << "Hierarchical time: " << cmp_time * 1000 << " ms" << std::endl;
+        printf("hier preprocessing time: %f ms, kernel time: %f ms\n",
+               (build_time + scan_time) * 1000.0, cmp_time * 1000.0);
+    }
+
+    HRR(cudaEventDestroy(ev_k0));
+    HRR(cudaEventDestroy(ev_k1));
+
+    HRR(cudaFree(d_hash_tables_offset));
+    HRR(cudaFree(d_adjcant));
+    HRR(cudaFree(d_vertex));
+    HRR(cudaFree(d_degree_offset));
+    HRR(cudaFree(d_ir));
+    HRR(cudaFree(d_intersection_orders));
+    HRR(cudaFree(d_intersection_offset));
+    HRR(cudaFree(d_restriction));
+    HRR(cudaFree(d_reuse));
+    HRR(cudaFree(G_INDEX));
+
+    // Note: sum1 is 0 because we only run the hierarchical version
+    // To compare with original version, run both and set sum1 accordingly
+    // if (sum1 != sum2)
+    //     std::cout << "Error: Normal sum " << sum1 << " Hierarchical sum " << sum2 << std::endl;
+    std::cout << pattern << " count is " << sum2 << std::endl;
+
+    args.time = max_time;
+    args.count = sum2;
+    return args;
+}
