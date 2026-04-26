@@ -3,6 +3,7 @@
 
 #include <cuda_runtime.h>
 
+#include <utility>
 #include <vector>
 
 #include "../common/graph_data.cuh"
@@ -25,13 +26,15 @@ class TCBaseline : public HashTableBuilder {
   void prepare_vertex_list(const CSRGraph& graph);
 
   // 使用分层哈希运行实验
-  unsigned long long run_hierarchical(CSRGraph& graph, int CHUNK_SIZE,
-                                      int grid_size, int block_size,
-                                      int bucket_size, bool sorted);
+  std::pair<unsigned long long, float> run_hierarchical(
+      CSRGraph& graph, int CHUNK_SIZE, int grid_size, int block_size,
+      int bucket_size, bool sorted);
 
   // 使用普通哈希运行实验
-  unsigned long long run_normal(CSRGraph& graph, int CHUNK_SIZE, int grid_size,
-                                int block_size, int bucket_size, bool sorted);
+  std::pair<unsigned long long, float> run_normal(CSRGraph& graph,
+                                                  int CHUNK_SIZE, int grid_size,
+                                                  int block_size,
+                                                  int bucket_size, bool sorted);
 
   // 获取总三角形数量
   unsigned long long get_total_count();

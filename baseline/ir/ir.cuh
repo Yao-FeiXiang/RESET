@@ -1,6 +1,7 @@
 #ifndef IR_CUH
 #define IR_CUH
 
+#include <utility>
 #include <vector>
 
 #include "../common/graph_data.cuh"
@@ -14,6 +15,7 @@ class IRBaseline : public HashTableBuilder {
   IRBaseline()
       : d_inverted_index_(nullptr),
         d_inverted_index_offsets_(nullptr),
+        d_inverted_index_sorted_(nullptr),
         d_query_(nullptr),
         d_query_offsets_(nullptr),
         d_result_(nullptr),
@@ -23,18 +25,23 @@ class IRBaseline : public HashTableBuilder {
 
   ~IRBaseline();
 
+  // 预排序倒排索引(用于hierarchical哈希),在计时前完成
+  void pre_sort_inverted_index(const InvertedIndex& index);
+
   // 从文件加载查询数据
   void load_queries(const std::string& query_path,
                     const std::string& query_offsets_path,
                     const std::string& query_num_path);
 
   // 使用分层哈希运行实验
-  int run_hierarchical(int CHUNK_SIZE, int grid_size, int block_size,
-                       int bucket_size, bool sorted);
+  std::pair<int, float> run_hierarchical(int CHUNK_SIZE, int grid_size,
+                                         int block_size, int bucket_size,
+                                         bool sorted);
 
   // 使用普通哈希运行实验
-  int run_normal(int CHUNK_SIZE, int grid_size, int block_size, int bucket_size,
-                 bool sorted);
+  std::pair<int, float> run_normal(int CHUNK_SIZE, int grid_size,
+                                   int block_size, int bucket_size,
+                                   bool sorted);
 
   // 获取所有查询结果计数
   std::vector<int> get_results();
@@ -59,6 +66,7 @@ class IRBaseline : public HashTableBuilder {
   // 设备端倒排索引数据
   int* d_inverted_index_;
   int* d_inverted_index_offsets_;
+  int* d_inverted_index_sorted_;  // 按桶位置排序后的倒排索引
 
   // 主机端查询数据
   std::vector<int> global_query_;

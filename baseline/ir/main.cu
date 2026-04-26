@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
   int bucket_size = 5;
 
   bool run_original = true;
-  bool run_cuco = false;
+  bool run_cuco = true;
 
   // ==================== 解析参数 ====================
   for (int i = 2; i < argc; i++) {
@@ -111,42 +111,51 @@ int main(int argc, char* argv[]) {
 
   // ==================== ORIGINAL ====================
   if (run_original) {
-    // 分层哈希
+    // 普通哈希 (不需要排序)
     flush.flush();
-    double t0 = clock();
-    int result_hierarchical = baseline.run_hierarchical(
+    auto [result_normal, kernel_time_normal] = baseline.run_normal(
         CHUNK_SIZE, grid_size, block_size, bucket_size, false);
-    double secs = (clock() - t0) / CLOCKS_PER_SEC;
 
-    printf("[RESET] 内核执行时间: %.6f 秒\n", secs);
-    printf("[RESET] 信息相似度结果数: %d\n", result_hierarchical);
-
-    // 普通哈希
-    flush.flush();
-    t0 = clock();
-    int result_normal = baseline.run_normal(CHUNK_SIZE, grid_size, block_size,
-                                            bucket_size, false);
-    secs = (clock() - t0) / CLOCKS_PER_SEC;
-
-    printf("[Native] 内核执行时间: %.6f 秒\n", secs);
+    printf("[Native] 内核执行时间: %.6f 秒\n", kernel_time_normal / 1000.0);
     printf("[Native] 信息相似度结果数: %d\n", result_normal);
+
+    // 预排序倒排索引(仅用于hierarchical哈希),在计时前完成
+    baseline.pre_sort_inverted_index(index);
+
+    // 分层哈希 (需要排序后的倒排索引)
+    flush.flush();
+    auto [result_hierarchical, kernel_time_hierarchical] =
+        baseline.run_hierarchical(CHUNK_SIZE, grid_size, block_size,
+                                  bucket_size, true);
+
+    printf("[RESET] 内核执行时间: %.6f 秒\n",
+           kernel_time_hierarchical / 1000.0);
+    printf("[RESET] 信息相似度结果数: %d\n", result_hierarchical);
   }
 
   // ==================== CUCO ====================
   if (run_cuco) {
     flush.flush();
-    double t0 = clock();
 
-    run_ir_cuco(index.get_num_nodes(), baseline.get_query_num(),
-                index.get_device_elements(), index.get_device_offsets(),
-                baseline.get_d_query(), baseline.get_d_query_offsets(),
-                baseline.get_d_result(), baseline.get_d_result_offsets(),
-                baseline.get_d_result_count(), baseline.get_d_G_index(),
-                CHUNK_SIZE, index.get_host_offsets(), index.get_host_elements(),
-                grid_size, block_size, load_factor, 0);
+    // 重置结果缓冲区和G_index
+    int h_G_index = grid_size * block_size / 32 * CHUNK_SIZE;
+    cudaMemcpy(baseline.get_d_G_index(), &h_G_index, sizeof(int),
+               cudaMemcpyHostToDevice);
+    cudaMemset(baseline.get_d_result_count(), 0,
+               baseline.get_query_num() * sizeof(int));
 
-    double secs = (clock() - t0) / CLOCKS_PER_SEC;
-    printf("[cuCollections] 内核执行时间: %.6f 秒\n", secs);
+    auto [result_cuco, kernel_time_cuco] = run_ir_cuco(
+        index.get_num_nodes(), baseline.get_query_num(),
+        index.get_device_elements(), index.get_device_offsets(),
+        baseline.get_d_query(), baseline.get_d_query_offsets(),
+        baseline.get_d_result(), baseline.get_d_result_offsets(),
+        baseline.get_d_result_count(), baseline.get_d_G_index(), CHUNK_SIZE,
+        index.get_host_offsets(), index.get_host_elements(), grid_size,
+        block_size, load_factor, 0);
+
+    printf("[cuCollections] 内核执行时间: %.6f 秒\n",
+           kernel_time_cuco / 1000.0);
+    printf("[cuCollections] 信息相似度结果数: %d\n", result_cuco);
   }
 
   return 0;

@@ -3,6 +3,7 @@
 
 #include <cuda_runtime.h>
 
+#include <utility>
 #include <vector>
 
 /**
@@ -20,14 +21,12 @@
  * @param CHUNK_SIZE 每个warp处理的查询块大小
  * @param load_factor 负载因子
  * @param stream CUDA流
- * @return unsigned long long 三角形总数
+ * @return std::pair<unsigned long long, float> 三角形总数和内核执行时间(ms)
  */
-unsigned long long run_tc_cuco(int num_nodes, int num_edges,
-                               int const* d_vertexs, int const* d_csr_row,
-                               int const* d_csr_cols_for_traversal,
-                               std::vector<int> const& csr_row_host,
-                               std::vector<int> const& csr_cols_host,
-                               int grid_size, int block_size, int CHUNK_SIZE,
-                               float load_factor, cudaStream_t stream = 0);
+std::pair<unsigned long long, float> run_tc_cuco(
+    int num_nodes, int num_edges, int const* d_vertexs, int const* d_csr_row,
+    int const* d_csr_cols_for_traversal, std::vector<int> const& csr_row_host,
+    std::vector<int> const& csr_cols_host, int grid_size, int block_size,
+    int CHUNK_SIZE, float load_factor, cudaStream_t stream = 0);
 
 #endif  // TC_CUCO_CUH

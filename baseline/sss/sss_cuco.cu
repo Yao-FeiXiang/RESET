@@ -2,22 +2,8 @@
 #include <thrust/host_vector.h>
 
 #include "../common/cuco_baseline.cuh"
+#include "../common/utils.cuh"
 #include "sss_cuco.cuh"
-
-/**
- * @brief 编码(u, v)边对为64位键
- * 确保u < v避免重复存储
- */
-__host__ __device__ __forceinline__ std::uint64_t encode_edge_key(int u,
-                                                                  int v) {
-  if (u > v) {
-    int tmp = u;
-    u = v;
-    v = tmp;
-  }
-  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(u)) << 32) |
-         static_cast<std::uint32_t>(v);
-}
 
 /**
  * @brief SSS cuCollections基线类
@@ -32,7 +18,8 @@ class SSSCuCollections : public CuCollectionsStaticSetBase<std::uint64_t> {
    * @brief 构造函数
    * @param total_edges 总边数量
    */
-  explicit SSSCuCollections(std::size_t total_edges) : base_type(total_edges) {}
+  explicit SSSCuCollections(std::size_t total_edges)
+      : base_type(total_edges, 2.0f) {}
 
   /**
    * @brief 从CSR格式构建边集合

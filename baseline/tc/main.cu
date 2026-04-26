@@ -112,46 +112,37 @@ int main(int argc, char* argv[]) {
   if (run_original) {
     // 普通哈希
     flush.flush();
-    cudaDeviceSynchronize();
-    double time_start = clock();
 
-    unsigned long long result_normal = baseline.run_normal(
+    auto [result_normal, kernel_time_normal] = baseline.run_normal(
         graph, CHUNK_SIZE, grid_size, block_size, bucket_size, false);
 
-    double cmp_time = (clock() - time_start) / CLOCKS_PER_SEC;
-
-    printf("[Native] 内核执行时间: %.6f 秒\n", cmp_time);
+    printf("[Native] 内核执行时间: %.6f 秒\n", kernel_time_normal / 1000.0);
     printf("三角形数量: %llu\n", result_normal);
 
     // 分层哈希
     flush.flush();
-    cudaDeviceSynchronize();
-    time_start = clock();
 
-    unsigned long long result_hierarchical = baseline.run_hierarchical(
-        graph, CHUNK_SIZE, grid_size, block_size, bucket_size, true);
+    auto [result_hierarchical, kernel_time_hierarchical] =
+        baseline.run_hierarchical(graph, CHUNK_SIZE, grid_size, block_size,
+                                  bucket_size, true);
 
-    cmp_time = (clock() - time_start) / CLOCKS_PER_SEC;
-
-    printf("[RESET] 内核执行时间: %.6f 秒\n", cmp_time);
+    printf("[RESET] 内核执行时间: %.6f 秒\n",
+           kernel_time_hierarchical / 1000.0);
     printf("三角形数量: %llu\n", result_hierarchical);
   }
 
   // ==================== CUCO ====================
   if (run_cuco) {
     flush.flush();
-    cudaDeviceSynchronize();
-    double time_start = clock();
 
-    unsigned long long result_cuco = run_tc_cuco(
+    auto [result_cuco, kernel_time_cuco] = run_tc_cuco(
         num_nodes, graph.get_num_elements(), baseline.get_d_vertex_list(),
         graph.get_device_offsets(), graph.get_device_elements(),
         graph.get_host_offsets(), graph.get_host_elements(), grid_size,
         block_size, CHUNK_SIZE, load_factor, 0);
 
-    double cmp_time = (clock() - time_start) / CLOCKS_PER_SEC;
-
-    printf("[cuCollections] 内核执行时间: %.6f 秒\n", cmp_time);
+    printf("[cuCollections] 内核执行时间: %.6f 秒\n",
+           kernel_time_cuco / 1000.0);
     printf("三角形数量: %llu\n", result_cuco);
   }
 

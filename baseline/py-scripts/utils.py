@@ -182,14 +182,10 @@ def parse_ncu_output(ncu_output: str, metrics_map: Dict[str, str]) -> Dict[str, 
         except ValueError:
             continue
 
-        # GPU时间需要转换单位到毫秒
+        # gpu__time_duration.sum 的单位是周期(cycles)，不是时间！
+        # 直接保存为百万周期(M cycles)，用于GPU行为分析
         if metric == "gpu__time_duration.sum":
-            if unit in ("s", None, ""):
-                value = value * 1000.0
-            elif unit == "ms":
-                pass  # 已经是毫秒
-            elif unit == "us":
-                value = value / 1000.0
+            value = value / 1_000_000.0  # 转换为百万周期
 
         results[metrics_map[metric]] = value
 
@@ -256,7 +252,7 @@ def calculate_sector_per_request(results: List[Dict[str, Any]]) -> List[Dict[str
 def format_results_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     对单行结果进行数据格式化
-    - 时间类列(kernel_time_ms, GPU_duration_ms): 保留2位小数
+    - 时间列(kernel_time_ms): 保留2位小数, gpu_cycles_M: 保留2位小数
     - L1指标(L1GlobalLoadReq, L1GlobalLoadSectors): 转为整数
     - 科学计数法列: L1GlobalLoadReq_e6, L1GlobalLoadSectors_e6 (保留2位小数)
     - sector_per_request: 保留2位小数
@@ -267,7 +263,7 @@ def format_results_row(row: Dict[str, Any]) -> Dict[str, Any]:
         格式化后的结果行
     """
     # 时间类列 - 保留2位小数
-    for col in ["kernel_time_ms", "GPU_duration_ms"]:
+    for col in ["kernel_time_ms", "gpu_cycles_M"]:
         val = row.get(col)
         if val is not None and isinstance(val, (int, float)):
             row[col] = round(val, 2)
@@ -332,7 +328,7 @@ def load_existing_results(csv_path: Path) -> List[Dict[str, Any]]:
                 elif key in [
                     'kernel_time_ms',
                     'retry_count',
-                    'GPU_duration_ms',
+                    'gpu_cycles_M',
                     'L1GlobalLoadReq',
                     'L1GlobalLoadSectors',
                     'sector_per_request',
@@ -371,7 +367,7 @@ def save_results_to_csv(
         "dataset",
         "method_name",
         "kernel_time_ms",
-        "GPU_duration_ms",
+        "gpu_cycles_M",
         "L1GlobalLoadReq",
         "L1GlobalLoadSectors",
         "sector_per_request",

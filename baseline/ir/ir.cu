@@ -170,12 +170,23 @@ void gpu_sort_csr_cols(std::vector<int>& csr_cols,
 IRBaseline::~IRBaseline() {
   // d_inverted_index_ 和 d_inverted_index_offsets_
   // 由InvertedIndex管理,不需要在这里释放
+  if (d_inverted_index_sorted_) cudaFree(d_inverted_index_sorted_);
   if (d_query_) cudaFree(d_query_);
   if (d_query_offsets_) cudaFree(d_query_offsets_);
   if (d_result_) cudaFree(d_result_);
   if (d_result_offsets_) cudaFree(d_result_offsets_);
   if (d_result_count_) cudaFree(d_result_count_);
   if (d_G_index_) cudaFree(d_G_index_);
+}
+
+// 预排序倒排索引(用于hierarchical哈希),在计时前完成
+void IRBaseline::pre_sort_inverted_index(const InvertedIndex& index) {
+  std::vector<int> sorted_cols = index.get_host_elements();
+  gpu_sort_csr_cols(sorted_cols, index.get_host_offsets(),
+                    index.get_num_nodes(), get_max_length());
+  cudaMalloc(&d_inverted_index_sorted_, sorted_cols.size() * sizeof(int));
+  cudaMemcpy(d_inverted_index_sorted_, sorted_cols.data(),
+             sorted_cols.size() * sizeof(int), cudaMemcpyHostToDevice);
 }
 
 void IRBaseline::load_queries(const std::string& query_path,
@@ -206,12 +217,14 @@ void IRBaseline::allocate_result_buffers(const InvertedIndex& index) {
   d_inverted_index_offsets_ = index.get_device_offsets();
 
   // 计算每个查询的结果偏移量,预留存储空间
+  // 使用第一个词项的度数作为上界(安全但可能浪费),
+  // 因为交集结果 <= min(所有词项度数) <= 第一个词项度数
   std::vector<long long> result_offsets(query_num_ + 1, 0);
+  auto const& offsets = index.get_host_offsets();
   for (int i = 0; i < query_num_; i++) {
     int term = global_query_[query_offsets_[i]];
-    result_offsets[i + 1] = result_offsets[i] +
-                            index.get_host_offsets()[term + 1] -
-                            index.get_host_offsets()[term];
+    result_offsets[i + 1] =
+        result_offsets[i] + offsets[term + 1] - offsets[term];
   }
   printf("result offset end: %lld\n", result_offsets[query_num_]);
 
@@ -224,20 +237,43 @@ void IRBaseline::allocate_result_buffers(const InvertedIndex& index) {
   cudaMemset(d_result_count_, 0, query_num_ * sizeof(int));
 }
 
-int IRBaseline::run_hierarchical(int CHUNK_SIZE, int grid_size, int block_size,
-                                 int bucket_size, bool sorted) {
+std::pair<int, float> IRBaseline::run_hierarchical(int CHUNK_SIZE,
+                                                   int grid_size,
+                                                   int block_size,
+                                                   int bucket_size,
+                                                   bool sorted) {
   int h_G_index = grid_size * block_size / warpSize * CHUNK_SIZE;
+  // 修复：先释放旧指针,避免内存泄漏
+  if (d_G_index_) cudaFree(d_G_index_);
   cudaMalloc(&d_G_index_, sizeof(int));
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemset(d_result_count_, 0, query_num_ * sizeof(int));
 
+  // 使用预排序的倒排索引(排序已在计时外完成)
+  int* d_inverted_index_ptr =
+      sorted ? d_inverted_index_sorted_ : d_inverted_index_;
+
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   ir_kernel<<<grid_size, block_size>>>(
-      d_inverted_index_, d_inverted_index_offsets_, d_query_, d_query_offsets_,
-      query_num_, d_result_, d_result_offsets_, d_result_count_, d_G_index_,
-      CHUNK_SIZE, get_max_length(), true, get_d_hash_hierarchical(),
-      get_d_hash_tables_offset(), get_bucket_num(), bucket_size);
-  cudaDeviceSynchronize();
+      d_inverted_index_ptr, d_inverted_index_offsets_, d_query_,
+      d_query_offsets_, query_num_, d_result_, d_result_offsets_,
+      d_result_count_, d_G_index_, CHUNK_SIZE, get_max_length(), true,
+      get_d_hash_hierarchical(), get_d_hash_tables_offset(), get_bucket_num(),
+      bucket_size);
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 
   std::vector<int> h_counts(query_num_);
   cudaMemcpy(h_counts.data(), d_result_count_, sizeof(int) * query_num_,
@@ -246,23 +282,39 @@ int IRBaseline::run_hierarchical(int CHUNK_SIZE, int grid_size, int block_size,
   // 累加所有查询的结果总数
   int sum = 0;
   for (int x : h_counts) sum += x;
-  return sum;
+  return {sum, kernel_time_ms};
 }
 
-int IRBaseline::run_normal(int CHUNK_SIZE, int grid_size, int block_size,
-                           int bucket_size, bool sorted) {
+std::pair<int, float> IRBaseline::run_normal(int CHUNK_SIZE, int grid_size,
+                                             int block_size, int bucket_size,
+                                             bool sorted) {
   int h_G_index = grid_size * block_size / warpSize * CHUNK_SIZE;
+  // 修复：先释放旧指针,避免内存泄漏
+  if (d_G_index_) cudaFree(d_G_index_);
   cudaMalloc(&d_G_index_, sizeof(int));
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemset(d_result_count_, 0, query_num_ * sizeof(int));
 
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   ir_kernel<<<grid_size, block_size>>>(
       d_inverted_index_, d_inverted_index_offsets_, d_query_, d_query_offsets_,
       query_num_, d_result_, d_result_offsets_, d_result_count_, d_G_index_,
       CHUNK_SIZE, get_max_length(), false, get_d_hash_normal(),
       get_d_hash_tables_offset(), get_bucket_num(), bucket_size);
-  cudaDeviceSynchronize();
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 
   std::vector<int> h_counts(query_num_);
   cudaMemcpy(h_counts.data(), d_result_count_, sizeof(int) * query_num_,
@@ -271,7 +323,7 @@ int IRBaseline::run_normal(int CHUNK_SIZE, int grid_size, int block_size,
   // 累加所有查询的结果总数
   int sum = 0;
   for (int x : h_counts) sum += x;
-  return sum;
+  return {sum, kernel_time_ms};
 }
 
 std::vector<int> IRBaseline::get_results() {

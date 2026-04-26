@@ -3,6 +3,7 @@
 
 #include <cuda_runtime.h>
 
+#include <utility>
 #include <vector>
 
 /**
@@ -25,17 +26,15 @@
  * @param block_size 块大小
  * @param load_factor 负载因子
  * @param stream CUDA流
- * @return int 总结果大小
+ * @return std::pair<int, float> 结果大小和内核执行时间(ms)
  */
-int run_ir_cuco(int inverted_index_num, int query_num,
-                int const* d_inverted_index,
-                int const* d_inverted_index_offsets, int const* d_query,
-                int const* d_query_offsets, int* d_result,
-                long long const* d_result_offsets, int* d_result_count,
-                int* d_G_index, int CHUNK_SIZE,
-                std::vector<int> const& inverted_index_offsets_host,
-                std::vector<int> const& inverted_index_host, int grid_size,
-                int block_size, float load_factor = 0.25,
-                cudaStream_t stream = 0);
+std::pair<int, float> run_ir_cuco(
+    int inverted_index_num, int query_num, int const* d_inverted_index,
+    int const* d_inverted_index_offsets, int const* d_query,
+    int const* d_query_offsets, int* d_result,
+    long long const* d_result_offsets, int* d_result_count, int* d_G_index,
+    int CHUNK_SIZE, std::vector<int> const& inverted_index_offsets_host,
+    std::vector<int> const& inverted_index_host, int grid_size, int block_size,
+    float load_factor = 0.25, cudaStream_t stream = 0);
 
 #endif  // IR_CUCO_CUH

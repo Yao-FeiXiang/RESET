@@ -32,7 +32,8 @@ class TCCuCollections : public CuCollectionsStaticSetBase<std::uint64_t> {
    * @brief 构造函数
    * @param total_edges 总边数量
    */
-  explicit TCCuCollections(std::size_t total_edges) : base_type(total_edges) {}
+  explicit TCCuCollections(std::size_t total_edges)
+      : base_type(total_edges, 2.0f) {}
 
   /**
    * @brief 从CSR格式构建边集合
@@ -156,13 +157,11 @@ __global__ void tc_cuco_kernel(int num_edges, int const* __restrict__ d_vertexs,
  * @brief 主机端启动TC cuCollections计数的接口
  * 完全对齐baseline实现
  */
-unsigned long long run_tc_cuco(int num_nodes, int num_edges,
-                               int const* d_vertexs, int const* d_csr_row,
-                               int const* d_csr_cols_for_traversal,
-                               std::vector<int> const& csr_row_host,
-                               std::vector<int> const& csr_cols_host,
-                               int grid_size, int block_size, int CHUNK_SIZE,
-                               float load_factor, cudaStream_t stream) {
+std::pair<unsigned long long, float> run_tc_cuco(
+    int num_nodes, int num_edges, int const* d_vertexs, int const* d_csr_row,
+    int const* d_csr_cols_for_traversal, std::vector<int> const& csr_row_host,
+    std::vector<int> const& csr_cols_host, int grid_size, int block_size,
+    int CHUNK_SIZE, float load_factor, cudaStream_t stream) {
   // 分配结果计数空间
   unsigned long long* d_triangle_count;
   cudaMalloc(&d_triangle_count, sizeof(unsigned long long));
@@ -182,10 +181,25 @@ unsigned long long run_tc_cuco(int num_nodes, int num_edges,
 
   // 启动内核
   auto contains_ref = tc_cuco.get_contains_ref();
+
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   tc_cuco_kernel<<<grid_size, block_size, 0, stream>>>(
       num_edges, d_vertexs, d_csr_cols_for_traversal, d_csr_row,
       d_csr_cols_for_traversal, contains_ref, d_triangle_count, d_edge_index,
       CHUNK_SIZE);
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 
   // 读取结果
   unsigned long long triangle_count;
@@ -194,5 +208,5 @@ unsigned long long run_tc_cuco(int num_nodes, int num_edges,
   cudaFree(d_triangle_count);
 
   cudaStreamSynchronize(stream);
-  return triangle_count;
+  return {triangle_count, kernel_time_ms};
 }

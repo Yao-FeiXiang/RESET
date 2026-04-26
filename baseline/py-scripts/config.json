@@ -24,7 +24,7 @@
     "ncu": {
         "tmp_dir": "~/ncu_tmp",
         "metrics_map": {
-            "gpu__time_duration.sum": "GPU_duration_ms",
+            "gpu__time_duration.sum": "gpu_cycles_M",
             "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadReq",
             "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadSectors"
         },
@@ -91,7 +91,7 @@
         "sector_per_request",
         "L1GlobalLoadReq",
         "L1GlobalLoadSectors",
-        "GPU_duration_ms",
+        "gpu_cycles_M",
         "timing_success",
         "ncu_status",
         "retry_count"

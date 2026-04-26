@@ -18,7 +18,7 @@ SSS实验自动化脚本
 
 输出列说明:
   kernel_time_ms: 内核执行时间(ms, 2位小数)
-  GPU_duration_ms: GPU执行时间(ms, 2位小数)
+  gpu_cycles_M: GPU执行周期数(百万周期)
   L1GlobalLoadReq: L1全局加载请求数(整数)
   L1GlobalLoadSectors: L1全局加载扇区数(整数)
   sector_per_request: 平均每个请求的扇区数

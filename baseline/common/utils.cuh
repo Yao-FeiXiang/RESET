@@ -1,6 +1,7 @@
 #ifndef UTILS_CUH
 #define UTILS_CUH
 
+#include <assert.h>
 #include <cuda_runtime.h>
 
 #include <fstream>
@@ -78,5 +79,30 @@ int* read_int_binary(const std::string& path);
 // 通过调用nvidia-smi获取剩余显存信息
 // 如果不足,打印错误信息并退出程序
 void check_gpu_memory(int min_required_mib = 20000);
+
+/**
+ * @brief 编码(term, doc)对为64位键 (用于IR)
+ * 将32位term和32位doc编码为一个64位整数存储
+ */
+__host__ __device__ __forceinline__ std::uint64_t encode_posting_key(int term,
+                                                                     int doc) {
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(term)) << 32) |
+         static_cast<std::uint32_t>(doc);
+}
+
+/**
+ * @brief 编码(u, v)边对为64位键 (用于SSS/TC)
+ * 确保u < v避免重复存储
+ */
+__host__ __device__ __forceinline__ std::uint64_t encode_edge_key(int u,
+                                                                  int v) {
+  if (u > v) {
+    int tmp = u;
+    u = v;
+    v = tmp;
+  }
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(u)) << 32) |
+         static_cast<std::uint32_t>(v);
+}
 
 #endif  // UTILS_CUH

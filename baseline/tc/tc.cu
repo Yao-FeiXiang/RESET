@@ -180,9 +180,9 @@ void TCBaseline::allocate_buffers() {
   cudaMemset(d_total_count_, 0, sizeof(unsigned long long));
 }
 
-unsigned long long TCBaseline::run_hierarchical(CSRGraph& graph, int CHUNK_SIZE,
-                                                int grid_size, int block_size,
-                                                int bucket_size, bool sorted) {
+std::pair<unsigned long long, float> TCBaseline::run_hierarchical(
+    CSRGraph& graph, int CHUNK_SIZE, int grid_size, int block_size,
+    int bucket_size, bool sorted) {
   int h_G_index = grid_size * block_size / 32 * CHUNK_SIZE;
   cudaMalloc(&d_G_index_, sizeof(int));
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
@@ -196,7 +196,7 @@ unsigned long long TCBaseline::run_hierarchical(CSRGraph& graph, int CHUNK_SIZE,
                       graph.get_num_nodes(), get_max_length());
     double end_sort = clock();
     double sort_time = (end_sort - start_sort) / CLOCKS_PER_SEC;
-    printf("排序时间: %.6f 秒\n", sort_time);
+    // printf("排序时间: %.6f 秒\n", sort_time);
 
     cudaMalloc(&d_csr_cols_sorted_, sorted_cols.size() * sizeof(int));
     cudaMemcpy(d_csr_cols_sorted_, sorted_cols.data(),
@@ -208,33 +208,59 @@ unsigned long long TCBaseline::run_hierarchical(CSRGraph& graph, int CHUNK_SIZE,
 
   cudaMemset(d_total_count_, 0, sizeof(unsigned long long));
 
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   tc_kernel<<<grid_size, block_size>>>(
       num_edges_, d_vertexs_, d_csr_cols_ptr, graph.get_device_offsets(),
       get_d_hash_length(), get_d_hash_hierarchical(),
       get_d_hash_tables_offset(), d_total_count_, d_G_index_, CHUNK_SIZE, true,
       get_max_length(), get_bucket_num(), bucket_size);
-  cudaDeviceSynchronize();
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
 
-  return get_total_count();
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+
+  return {get_total_count(), kernel_time_ms};
 }
 
-unsigned long long TCBaseline::run_normal(CSRGraph& graph, int CHUNK_SIZE,
-                                          int grid_size, int block_size,
-                                          int bucket_size, bool sorted) {
+std::pair<unsigned long long, float> TCBaseline::run_normal(
+    CSRGraph& graph, int CHUNK_SIZE, int grid_size, int block_size,
+    int bucket_size, bool sorted) {
   int h_G_index = grid_size * block_size / 32 * CHUNK_SIZE;
   cudaMalloc(&d_G_index_, sizeof(int));
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemset(d_total_count_, 0, sizeof(unsigned long long));
 
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   tc_kernel<<<grid_size, block_size>>>(
       num_edges_, d_vertexs_, graph.get_device_elements(),
       graph.get_device_offsets(), get_d_hash_length(), get_d_hash_normal(),
       get_d_hash_tables_offset(), d_total_count_, d_G_index_, CHUNK_SIZE, false,
       get_max_length(), get_bucket_num(), bucket_size);
-  cudaDeviceSynchronize();
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
 
-  return get_total_count();
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+
+  return {get_total_count(), kernel_time_ms};
 }
 
 // 获取总三角形数量

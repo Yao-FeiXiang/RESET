@@ -7,11 +7,16 @@ GRAPH_DATASETS = "../graph_datasets"
 IR_DATASETS = "../ir_datasets"
 
 
-def has_bin_files(path: str) -> bool:
+def has_bin_files(path: str, mode: str) -> bool:
+    """根据模式检查对应的bin文件是否存在"""
+    marker_files = {"sss": "csr_cols.bin", "tc": "csr_cols_tri.bin", "ir": "inverted_index.bin"}
+    target_file = marker_files.get(mode)
+    if not target_file:
+        return False
+
     for root, _, files in os.walk(path):
-        for f in files:
-            if f.endswith(".bin"):
-                return True
+        if target_file in files:
+            return True
     return False
 
 
@@ -27,7 +32,7 @@ def batch_process(mode: str, update=False):
 
     for i, dataset in enumerate(datasets, 1):
         path = os.path.join(datasets_dir, dataset)
-        print(f"\n[{i}/{total}] Processing {dataset}...")
+        print(f"\n[{i}/{total}] Processing {dataset} ({mode})...")
         try:
             single_process(path, mode, update)
         except Exception as e:
@@ -49,10 +54,10 @@ def single_process(
         print("Dataset path does not exist!")
         return
 
-    marker_file = os.path.join(dataset_path, '.preprocess_in_progress')
+    marker_file = os.path.join(dataset_path, f'.preprocess_{mode}_in_progress')
 
-    if not update and has_bin_files(dataset_path) and not os.path.exists(marker_file):
-        print(f"[SKIP] dataset {dataset_path} already has been processed.")
+    if not update and has_bin_files(dataset_path, mode) and not os.path.exists(marker_file):
+        print(f"[SKIP] dataset {dataset_path} already has been processed for {mode}.")
         return
 
     # 创建进度标记

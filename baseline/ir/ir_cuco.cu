@@ -4,18 +4,8 @@
 #include <iostream>
 
 #include "../common/cuco_baseline.cuh"
+#include "../common/utils.cuh"
 #include "ir_cuco.cuh"
-
-/**
- * @brief 编码(term, doc)对为64位键
- *
- * 将32位term和32位doc编码为一个64位整数存储
- */
-__host__ __device__ __forceinline__ std::uint64_t encode_posting_key(int term,
-                                                                     int doc) {
-  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(term)) << 32) |
-         static_cast<std::uint32_t>(doc);
-}
 
 /**
  * @brief IR cuCollections基线类
@@ -31,7 +21,7 @@ class IRCuCollections : public CuCollectionsStaticSetBase<std::uint64_t> {
    * @param total_postings 总posting数量
    */
   explicit IRCuCollections(std::size_t total_postings)
-      : base_type(total_postings) {}
+      : base_type(total_postings, 2.0f) {}
 
   /**
    * @brief 从主机端倒排索引构建集合
@@ -149,29 +139,56 @@ __global__ void ir_cuco_kernel(int const* inverted_index,
 /**
  * @brief 主机端启动IR cuCollections查询的接口
  */
-int run_ir_cuco(int inverted_index_num, int query_num,
-                int const* d_inverted_index,
-                int const* d_inverted_index_offsets, int const* d_query,
-                int const* d_query_offsets, int* d_result,
-                long long const* d_result_offsets, int* d_result_count,
-                int* d_G_index, int CHUNK_SIZE,
-                std::vector<int> const& inverted_index_offsets_host,
-                std::vector<int> const& inverted_index_host, int grid_size,
-                int block_size, float load_factor, cudaStream_t stream) {
+std::pair<int, float> run_ir_cuco(
+    int inverted_index_num, int query_num, int const* d_inverted_index,
+    int const* d_inverted_index_offsets, int const* d_query,
+    int const* d_query_offsets, int* d_result,
+    long long const* d_result_offsets, int* d_result_count, int* d_G_index,
+    int CHUNK_SIZE, std::vector<int> const& inverted_index_offsets_host,
+    std::vector<int> const& inverted_index_host, int grid_size, int block_size,
+    float load_factor, cudaStream_t stream) {
   // 构建cuCollections集合
   std::size_t total_postings = inverted_index_host.size();
+  // std::cout << "准备创建IRCuCollections, 容量: " << total_postings <<
+  // std::endl;
   IRCuCollections ir_cuco(total_postings);
+
   ir_cuco.build(inverted_index_offsets_host, inverted_index_host,
                 inverted_index_num, stream);
 
   // 启动内核
   auto contains_ref = ir_cuco.get_contains_ref();
+
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   ir_cuco_kernel<<<grid_size, block_size, 0, stream>>>(
       d_inverted_index, d_inverted_index_offsets, d_query, d_query_offsets,
       query_num, d_result, d_result_offsets, d_result_count, d_G_index,
       CHUNK_SIZE, contains_ref);
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
 
-  // 同步并返回结果
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+
+  // 同步并读取结果计数
   cudaStreamSynchronize(stream);
-  return 0;
+
+  // 从设备读取结果计数并累加
+  std::vector<int> h_result_count(query_num);
+  cudaMemcpy(h_result_count.data(), d_result_count, sizeof(int) * query_num,
+             cudaMemcpyDeviceToHost);
+  int total_result = 0;
+  for (int cnt : h_result_count) {
+    total_result += cnt;
+  }
+
+  return {total_result, kernel_time_ms};
 }

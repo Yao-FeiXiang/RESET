@@ -34,22 +34,40 @@ class CuCollectionsStaticSetBase {
   /**
    * @brief 构造函数
    * @param capacity 集合的预期容量
+   * @param load_factor 负载因子,用于计算实际分配容量,默认为2.0
    */
-  explicit CuCollectionsStaticSetBase(std::size_t capacity)
+  explicit CuCollectionsStaticSetBase(std::size_t capacity,
+                                      float load_factor = 2.0f)
       : empty_key_(std::numeric_limits<key_type>::max()),
-        set_(static_cast<std::size_t>(capacity * 2.0),  // 2倍容量降低负载因子
-             cuco::empty_key{empty_key_}) {}
+        load_factor_(load_factor),
+        set_(nullptr) {
+    // 在当前CUDA设备上创建集合
+    set_ = new set_type(static_cast<std::size_t>(capacity * load_factor_),
+                        cuco::empty_key{empty_key_});
+  }
 
   /**
    * @brief 析构函数
    */
-  virtual ~CuCollectionsStaticSetBase() = default;
+  virtual ~CuCollectionsStaticSetBase() {
+    if (set_ != nullptr) {
+      delete set_;
+    }
+  }
+
+  // 禁用拷贝构造和赋值
+  CuCollectionsStaticSetBase(const CuCollectionsStaticSetBase&) = delete;
+  CuCollectionsStaticSetBase& operator=(const CuCollectionsStaticSetBase&) =
+      delete;
+
+  // 禁用移动构造(简化实现)
+  CuCollectionsStaticSetBase(CuCollectionsStaticSetBase&&) = delete;
 
   /**
    * @brief 获取cuCollections集合的contains查询引用,供内核使用
    * @return contains操作的引用
    */
-  auto get_contains_ref() const { return set_.ref(cuco::op::contains); }
+  auto get_contains_ref() const { return set_->ref(cuco::op::contains); }
 
   /**
    * @brief 插入一批键到集合中
@@ -59,13 +77,25 @@ class CuCollectionsStaticSetBase {
   void insert_keys(thrust::host_vector<key_type>& h_keys,
                    cudaStream_t stream = 0) {
     thrust::device_vector<key_type> d_keys = h_keys;
-    set_.insert(d_keys.begin(), d_keys.end(), stream);
+    set_->insert(d_keys.begin(), d_keys.end(), stream);
     cudaStreamSynchronize(stream);
+  }
+
+  /**
+   * @brief 兼容旧接口的insert_keys
+   * @param h_keys 主机端键向量
+   * @param device_id 设备ID(忽略,为了兼容旧代码)
+   * @param stream CUDA流,默认为0
+   */
+  void insert_keys(thrust::host_vector<key_type>& h_keys, int device_id,
+                   cudaStream_t stream = 0) {
+    insert_keys(h_keys, stream);
   }
 
  protected:
   key_type empty_key_;  // 空键标记
-  set_type set_;        // cuCollections静态集合
+  set_type* set_;       // cuCollections静态集合指针
+  float load_factor_;   // 负载因子,用于计算实际分配容量
 };
 
 #endif  // CUCO_BASELINE_CUH
