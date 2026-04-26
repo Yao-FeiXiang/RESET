@@ -1,12 +1,19 @@
 """
-结果可视化器：为超参数搜索结果生成热力图。
+结果可视化器 v2.0：为超参数搜索结果生成热力图
 生成发布质量的图表，展示成本、内核时间和硬件性能指标。
+
+优化内容：
+1. 移除重复代码，统一命名规范
+2. 改进配置结构，增强可扩展性
+3. 添加批量绘图支持
+4. 优化色阶和标注样式
+5. 增加自定义图表选项
 """
 
 import os
 import re
 import math
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -20,7 +27,7 @@ from util import auto_boundaries
 from result import ResultManager
 
 # ===========================================================================
-#                               全局绘图样式
+#                          全局绘图样式配置
 # ===========================================================================
 plt.rcParams.update(
     {
@@ -43,19 +50,15 @@ plt.rcParams.update(
 )
 
 
-class ResultVisualizer:
-    """
-    从超参数搜索结果生成发布质量的热力图。
+# ===========================================================================
+#                          图表配置类
+# ===========================================================================
 
-    属性:
-        manager: 包含结果的ResultManager
-        table_type: 要可视化的表布局 ("N"=普通, "H"=分层)
-        dataset: 数据集名称（用于文件名）
-        out_dir: 图表输出目录
-        best_data: 从ResultManager处理后的最佳数据
-    """
 
-    # 坐标轴和指标的可读名称（保留英文，方便发表）
+class PlotConfig:
+    """绘图配置：统一管理所有图表相关配置"""
+
+    # 坐标轴和指标的可读名称
     DISPLAY_NAMES = {
         "alpha": "Load Factor (α)",
         "b": "Bucket Size (b)",
@@ -64,44 +67,93 @@ class ResultVisualizer:
         "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "Global Load Sectors",
     }
 
-    # 每个指标的配置：格式、颜色映射、颜色边界
+    # 每个指标的详细配置
     METRIC_CONFIG: Dict[str, Dict[str, Any]] = {
         "cost": {
             "format": ".2f",
             "colormap": "viridis_r",
             "boundaries": {"mode": "log-quantile", "n_bins": 11, "clip_quantiles": (0.05, 0.85)},
             "scientific_notation": False,
+            "short_name": "cost",
         },
         "kernel_time": {
             "format": ".3f",
             "colormap": "viridis_r",
             "boundaries": {"mode": "log-quantile", "n_bins": 10, "clip_quantiles": (0.06, 0.85)},
             "scientific_notation": False,
+            "short_name": "time",
         },
         "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
             "format": ".3f",
             "colormap": "viridis_r",
             "boundaries": {"mode": "log-quantile", "n_bins": 10, "clip_quantiles": (0.03, 0.95)},
             "scientific_notation": True,
+            "short_name": "load",
         },
     }
 
-    # NCU全局加载扇区指标键
+    # 最佳点标注样式
+    MARKER_STYLES = {
+        "global": {"edgecolor": "#dc143c", "linewidth": 3.5, "linestyle": "-"},  # 深红色
+        "alpha": {"edgecolor": "#ff8c00", "linewidth": 2.2, "linestyle": "-"},  # 深橙色
+    }
+
+    # 图表大小计算参数
+    SIZE_PARAMS = {
+        "cell_width": 0.65,
+        "cell_height": 0.35,
+        "min_width": 7.5,
+        "max_width": 16.0,
+        "min_height": 4.2,
+        "max_height": 9.5,
+        "base_width": 2.6,
+        "base_height": 1.6,
+    }
+
+    # 标注字体大小阈值
+    FONT_SIZE_THRESHOLDS = [(120, 16), (240, 14), (float("inf"), 12)]
+
+
+# ===========================================================================
+#                          主可视化器类
+# ===========================================================================
+
+
+class HeatmapVisualizer:
+    """
+    从超参数搜索结果生成发布质量的热力图。
+
+    使用方法:
+        manager = ResultManager(dataset_name="sc18")
+        viz = HeatmapVisualizer(manager)
+        viz.plot_all()  # 绘制所有指标
+        # 或单独绘制
+        viz.plot_cost()
+        viz.plot_kernel_time()
+        viz.plot_load_sectors()
+    """
+
     GLOBAL_LOAD_KEY = "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"
 
     def __init__(
-        self, manager: ResultManager, default_table_type: str = "H", save_dir: Optional[str] = None
+        self,
+        manager: ResultManager,
+        table_type: str = "H",
+        save_dir: Optional[str] = None,
+        config: PlotConfig = None,
     ):
         """
         初始化可视化器。
 
         参数:
             manager: 包含加载结果的ResultManager
-            default_table_type: 默认要绘制的表布局 ("N" 或 "H")
+            table_type: 要绘制的表布局 ("N"=普通, "H"=分层)
             save_dir: 自定义输出目录 (默认: ../figure/)
+            config: 自定义绘图配置
         """
         self.manager = manager
-        self.table_type = default_table_type
+        self.table_type = table_type
+        self.config = config or PlotConfig()
 
         # 从路径提取数据集名称
         self.dataset_name = (
@@ -115,14 +167,15 @@ class ResultVisualizer:
 
         # 从管理器获取处理后的数据
         self.processed_data = self.manager.calculate_best()
-        if default_table_type not in self.processed_data:
-            raise KeyError(
-                f"table_type='{default_table_type}' 未找到，可用={list(self.processed_data.keys())}"
-            )
+        if table_type not in self.processed_data:
+            available = list(self.processed_data.keys())
+            raise KeyError(f"table_type='{table_type}' 未找到，可用选项: {available}")
 
-    # ===========================================================================
-    #                               辅助工具
-    # ===========================================================================
+        self.data = self.processed_data[table_type]
+
+    # ===================================================================
+    #                          工具函数
+    # ===================================================================
 
     @staticmethod
     def _slugify(filename: str) -> str:
@@ -148,236 +201,314 @@ class ResultVisualizer:
         norm = mcolors.BoundaryNorm(boundaries, cmap.N, clip=True)
         return cmap, norm
 
-    @staticmethod
-    def _auto_figure_size(n_x: int, n_y: int) -> Tuple[float, float]:
-        """根据网格尺寸自动选择图表大小。"""
-        cell_width = 0.65
-        cell_height = 0.35
-        width = max(7.5, min(16.0, 2.6 + n_x * cell_width))
-        height = max(4.2, min(9.5, 1.6 + n_y * cell_height))
+    def _calculate_figure_size(self, n_x: int, n_y: int) -> Tuple[float, float]:
+        """根据网格尺寸自动计算图表大小。"""
+        p = self.config.SIZE_PARAMS
+        width = max(p["min_width"], min(p["max_width"], p["base_width"] + n_x * p["cell_width"]))
+        height = max(
+            p["min_height"], min(p["max_height"], p["base_height"] + n_y * p["cell_height"])
+        )
         return width, height
 
-    @staticmethod
-    def _auto_annotation_font_size(n_cells: int) -> int:
-        """根据单元格数量自动选择注释字体大小。"""
-        if n_cells <= 120:
-            return 16
-        if n_cells <= 240:
-            return 14
+    def _calculate_annotation_size(self, n_cells: int) -> int:
+        """根据单元格数量自动计算标注字体大小。"""
+        for threshold, size in self.config.FONT_SIZE_THRESHOLDS:
+            if n_cells <= threshold:
+                return size
         return 12
 
-    # ===========================================================================
-    #                            核心绘图函数
-    # ===========================================================================
+    # ===================================================================
+    #                          核心绘图逻辑
+    # ===================================================================
 
-    def _plot_single_metric(
-        self, metric: str, mark_alpha_best: bool, mark_global_best: bool, name=None
-    ):
-        cfg = self.METRIC_CONFIG[metric]
-        data = self.processed_data[self.table_type]
+    def _plot_heatmap(
+        self,
+        metric: str,
+        mark_alpha_best: bool = True,
+        mark_global_best: bool = True,
+        custom_name: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        """
+        绘制单个指标的热力图。
 
-        Z_raw = np.array(data["Z_metric"][metric], dtype=float)
-        alphas = list(data["y"])
-        bs = list(data["x"])
-        best_points = data["best"]
+        参数:
+            metric: 要绘制的指标名称
+            mark_alpha_best: 是否标记每个alpha的最佳b
+            mark_global_best: 是否标记全局最佳点
+            custom_name: 自定义输出文件名
+            **kwargs: 额外的绘图参数
+        """
+        cfg = self.config.METRIC_CONFIG[metric]
+        Z_raw = np.array(self.data["Z_metric"][metric], dtype=float)
+        alphas = list(self.data["y"])
+        bs = list(self.data["x"])
+        best_points = self.data["best"]
 
-        # ---------- scientific scaling ----------
-        s = s.replace(os.sep, "_")
-        s = re.sub(r"[^A-Za-z0-9]+", "_", s)
-        return re.sub(r"_+", "_", s).strip("_").lower()
-
-    def _build_norm_and_cmap(
-        self, Z: np.ndarray, cmap_name: str, boundary_cfg: Dict[str, Any]
-    ) -> Tuple[mcolors.ListedColormap, mcolors.BoundaryNorm]:
-        df = pd.DataFrame(Z)
-        boundaries = auto_boundaries(
-            df,
-            n_bins=boundary_cfg.get("n_bins", 10),
-            clip_q=boundary_cfg.get("clip_q", (0.02, 0.98)),
-            mode=boundary_cfg.get("mode", "quantile"),
-            min_step=boundary_cfg.get("min_step", 1e-12),
-            keep_clip=boundary_cfg.get("keep_clip", True),
-        )
-        cmap = mcolors.ListedColormap(sns.color_palette(cmap_name, len(boundaries) - 1))
-        norm = mcolors.BoundaryNorm(boundaries, cmap.N, clip=True)
-        return cmap, norm
-
-    @staticmethod
-    def _auto_figsize(n_x: int, n_y: int) -> Tuple[float, float]:
-        cell_w = 0.65
-        cell_h = 0.35
-        w = max(7.5, min(16.0, 2.6 + n_x * cell_w))
-        h = max(4.2, min(9.5, 1.6 + n_y * cell_h))
-        return w, h
-
-    @staticmethod
-    def _auto_annot_size(n_cells: int) -> int:
-        if n_cells <= 120:
-            return 16
-        if n_cells <= 240:
-            return 14
-        return 12
-
-    # ========================================================
-    # ===================== Plot Core ========================
-    # ========================================================
-
-    def _plot_metric(self, metric: str, mark_alpha_best: bool, mark_global_best: bool, name=None):
-        cfg = self.METRIC_CFG[metric]
-        data = self.best_data[self.table_type]
-
-        Z_raw = np.array(data["Z_metric"][metric], dtype=float)
-        alphas = list(data["y"])
-        bs = list(data["x"])
-        best = data["best"]
-
-        # ---------- scientific scaling ----------
+        # 科学计数法缩放
         Z = Z_raw
         scale_exp = None
-        if cfg.get("sci", False):
+        if cfg.get("scientific_notation", False):
             vmax = np.nanmax(Z_raw)
             if np.isfinite(vmax) and vmax > 0:
                 scale_exp = int(math.floor(math.log10(vmax)))
                 Z = Z_raw / (10**scale_exp)
 
         n_y, n_x = Z.shape
-        figsize = self._auto_figsize(n_x=n_x, n_y=n_y)
-        annot_size = self._auto_annot_size(n_cells=n_x * n_y)
+        figsize = self._calculate_figure_size(n_x, n_y)
+        annot_size = self._calculate_annotation_size(n_x * n_y)
 
         fig, ax = plt.subplots(figsize=figsize)
 
-        cmap, norm = self._build_norm_and_cmap(
-            Z, cmap_name=cfg["cmap"], boundary_cfg=cfg["boundaries"]
+        # 构建色图和归一化
+        cmap, norm = self._build_colormap_and_norm(
+            Z, cmap_name=cfg["colormap"], boundary_config=cfg["boundaries"]
         )
 
-        hm = sns.heatmap(
+        # 绘制热力图
+        heatmap = sns.heatmap(
             Z,
             ax=ax,
             cmap=cmap,
             norm=norm,
             annot=True,
-            fmt=cfg["fmt"],
+            fmt=cfg["format"],
             cbar_kws={"shrink": 0.85, "pad": 0.02},
             annot_kws={"size": annot_size},
             linewidths=0.40,
             linecolor="black",
             square=False,
+            **kwargs,
         )
+
+        # 抗锯齿设置
         if ax.collections:
             ax.collections[0].set_antialiased(False)
 
-        # ax.set_aspect(0.75)
-        # ---------- ticks ----------
+        # 坐标轴设置
         ax.set_xticks(np.arange(n_x) + 0.5)
         ax.set_yticks(np.arange(n_y) + 0.5)
         ax.set_xticklabels(bs, rotation=0)
         ax.set_yticklabels(alphas, rotation=0)
 
-        ax.set_xlabel(self.DISPLAY["b"])
-        ax.set_ylabel(self.DISPLAY["alpha"])
+        ax.set_xlabel(self.config.DISPLAY_NAMES["b"])
+        ax.set_ylabel(self.config.DISPLAY_NAMES["alpha"])
 
-        # ---------- colorbar format ----------
+        # 色标格式设置
         cbar = ax.collections[0].colorbar
         cbar.formatter = mticker.FormatStrFormatter("%.2f")
         cbar.update_ticks()
 
-        # ---------- best markers ----------
-
-        # ---------- best markers (ULTRA HIGH CONTRAST) ----------
-
-        if mark_global_best and best.get("global") is not None:
-            y, x = best["global"]
-            ax.add_patch(
-                patches.Rectangle((x, y), 1, 1, fill=False, edgecolor="red", linewidth=3.2)
-            )
+        # 标记最佳点
+        if mark_global_best and best_points.get("global") is not None:
+            y, x = best_points["global"]
+            style = self.config.MARKER_STYLES["global"]
+            ax.add_patch(patches.Rectangle((x, y), 1, 1, fill=False, **style))
 
         if mark_alpha_best:
-            for y, x in best.get("alpha", []):
+            style = self.config.MARKER_STYLES["alpha"]
+            for y, x in best_points.get("alpha", []):
                 a = alphas[y]
-                if 0.1 <= float(a) <= 1.0:
-                    ax.add_patch(
-                        patches.Rectangle(
-                            (x, y),
-                            1,
-                            1,
-                            fill=False,
-                            edgecolor="#e9ad6c",
-                            linewidth=2.0,
-                            linestyle="-",
-                            joinstyle="round",
-                            capstyle="round",
-                            zorder=10,
-                        )
-                    )
+                if 0.1 <= float(a) <= 1.0:  # 仅在有效范围内标记
+                    ax.add_patch(patches.Rectangle((x, y), 1, 1, fill=False, **style))
 
-        # ---------- title ----------
-        title = f"{self.dataset} {self.DISPLAY[metric]}"
+        # 标题设置
+        title = f"{self.dataset_name} {self.config.DISPLAY_NAMES[metric]}"
         if scale_exp is not None:
             title += rf"  ($\times 10^{{{scale_exp}}}$)"
         ax.set_title(title, pad=12)
 
-        self._save(fig, metric, name)
+        # 保存图表
+        self._save_figure(fig, metric, custom_name)
         plt.close(fig)
 
-    # ========================================================
-    # ===================== Public API =======================
-    # ========================================================
+    # ===================================================================
+    #                          保存和导出
+    # ===================================================================
 
-    def plot_cost(self):
-        self._plot_metric("cost", mark_alpha_best=True, mark_global_best=True)
-
-    def plot_kernel_time(self):
-        self._plot_metric("kernel_time", mark_alpha_best=True, mark_global_best=True)
-
-    def plot_load_sector(self):
-        self._plot_metric(
-            self.LOAD_SECTOR_KEY, mark_alpha_best=True, mark_global_best=True, name="load_sector"
-        )
-
-    def plot_all(self):
-        self.plot_cost()
-        self.plot_kernel_time()
-        self.plot_load_sector()
-
-    # ========================================================
-    # ======================= Save ===========================
-    # ========================================================
-
-    def _save(self, fig: plt.Figure, metric: str, name=None):
-        if name is None:
-            name = f"{self._slug(self.dataset)}_{self._slug(metric)}_heatmap.pdf"
+    def _save_figure(self, fig: plt.Figure, metric: str, custom_name: Optional[str] = None) -> None:
+        """保存图表到文件。"""
+        if custom_name is None:
+            short_name = self.config.METRIC_CONFIG[metric].get("short_name", metric)
+            filename = f"{self._slugify(self.dataset_name)}_{short_name}_heatmap.pdf"
         else:
-            name = f"{self._slug(self.dataset)}_{name}_heatmap.pdf"
-        out_path = os.path.join(self.out_dir, name)
+            filename = (
+                f"{self._slugify(self.dataset_name)}_{self._slugify(custom_name)}_heatmap.pdf"
+            )
+
+        out_path = os.path.join(self.out_dir, filename)
 
         fig.tight_layout()
-
         fig.savefig(
             out_path,
             format="pdf",
             bbox_inches="tight",
             pad_inches=0.02,
             transparent=False,
-            metadata={"Creator": "matplotlib"},
+            metadata={"Creator": "HeatmapVisualizer"},
         )
 
+    # ===================================================================
+    #                          公开API方法
+    # ===================================================================
 
-# ============================================================
-# ========================== Main ============================
-# ============================================================
+    def plot_cost(self, **kwargs) -> None:
+        """绘制预测成本热力图。"""
+        self._plot_heatmap("cost", **kwargs)
+
+    def plot_kernel_time(self, **kwargs) -> None:
+        """绘制内核执行时间热力图。"""
+        self._plot_heatmap("kernel_time", **kwargs)
+
+    def plot_load_sectors(self, **kwargs) -> None:
+        """绘制全局加载扇区热力图。"""
+        self._plot_heatmap(self.GLOBAL_LOAD_KEY, custom_name="load_sector", **kwargs)
+
+    def plot_all(self, metrics: Optional[List[str]] = None) -> None:
+        """
+        绘制所有或指定指标的热力图。
+
+        参数:
+            metrics: 要绘制的指标列表，None表示全部
+        """
+        if metrics is None:
+            self.plot_cost()
+            self.plot_kernel_time()
+            self.plot_load_sectors()
+        else:
+            for metric in metrics:
+                if metric == "load_sectors":
+                    self.plot_load_sectors()
+                elif metric in self.config.METRIC_CONFIG:
+                    self._plot_heatmap(metric)
+
+    def compare_metrics(self, metrics: List[str], save_name: str = "comparison") -> None:
+        """
+        在同一个图中并排比较多个指标（用于论文插图）。
+
+        参数:
+            metrics: 要比较的指标列表
+            save_name: 输出文件名
+        """
+        n_metrics = len(metrics)
+        if n_metrics == 0:
+            return
+
+        # 创建子图网格
+        fig, axes = plt.subplots(1, n_metrics, figsize=(7 * n_metrics, 6))
+        if n_metrics == 1:
+            axes = [axes]
+
+        for idx, (ax, metric) in enumerate(zip(axes, metrics)):
+            cfg = self.config.METRIC_CONFIG[metric]
+            Z_raw = np.array(self.data["Z_metric"][metric], dtype=float)
+            alphas = list(self.data["y"])
+            bs = list(self.data["x"])
+
+            # 科学计数法缩放
+            Z = Z_raw
+            scale_exp = None
+            if cfg.get("scientific_notation", False):
+                vmax = np.nanmax(Z_raw)
+                if np.isfinite(vmax) and vmax > 0:
+                    scale_exp = int(math.floor(math.log10(vmax)))
+                    Z = Z_raw / (10**scale_exp)
+
+            cmap, norm = self._build_colormap_and_norm(
+                Z, cmap_name=cfg["colormap"], boundary_config=cfg["boundaries"]
+            )
+
+            annot_size = self._calculate_annotation_size(Z.shape[0] * Z.shape[1])
+
+            sns.heatmap(
+                Z,
+                ax=ax,
+                cmap=cmap,
+                norm=norm,
+                annot=True,
+                fmt=cfg["format"],
+                cbar_kws={"shrink": 0.8, "pad": 0.02},
+                annot_kws={"size": annot_size - 2},
+                linewidths=0.35,
+                linecolor="black",
+                square=False,
+            )
+
+            # 坐标轴设置
+            ax.set_xticklabels(bs, rotation=0)
+            ax.set_yticklabels(alphas, rotation=0)
+
+            # 仅在第一个子图显示y轴标签
+            ax.set_xlabel(self.config.DISPLAY_NAMES["b"], fontsize=16)
+            if idx == 0:
+                ax.set_ylabel(self.config.DISPLAY_NAMES["alpha"], fontsize=16)
+            else:
+                ax.set_ylabel("")
+
+            # 标题
+            title = self.config.DISPLAY_NAMES[metric]
+            if scale_exp is not None:
+                title += rf" ($\times 10^{{{scale_exp}}}$)"
+            ax.set_title(title, fontsize=18, pad=10)
+
+        fig.suptitle(f"{self.dataset_name} - 指标对比", fontsize=20, y=1.02)
+        fig.tight_layout()
+
+        out_path = os.path.join(self.out_dir, f"{self._slugify(self.dataset_name)}_{save_name}.pdf")
+        fig.savefig(out_path, format="pdf", bbox_inches="tight", pad_inches=0.02, transparent=False)
+        plt.close(fig)
 
 
-def generate_all():
-    datasets = ["bm", "gp", "sc18", "sc19", "sc20", "wt"]
+# ===========================================================================
+#                          便捷函数
+# ===========================================================================
+
+
+def generate_heatmaps(
+    dataset_name: str,
+    res_dir: Optional[str] = None,
+    save_dir: Optional[str] = None,
+    table_type: str = "H",
+) -> None:
+    """
+    为指定数据集生成所有热力图。
+
+    参数:
+        dataset_name: 数据集名称
+        res_dir: 结果CSV文件目录
+        save_dir: 图表输出目录
+        table_type: 表类型 ("N" 或 "H")
+    """
+    manager = ResultManager(dataset_name=dataset_name)
+    if res_dir:
+        manager.path = os.path.join(res_dir, f"{dataset_name}.csv")
+
+    viz = HeatmapVisualizer(manager, table_type=table_type, save_dir=save_dir)
+    viz.plot_all()
+    print(f"[完成] {dataset_name} 所有图表已生成")
+
+
+def generate_all_datasets(datasets: List[str] = None, table_type: str = "H") -> None:
+    """
+    为所有数据集批量生成热力图。
+
+    参数:
+        datasets: 数据集名称列表，None使用默认列表
+        table_type: 表类型
+    """
+    if datasets is None:
+        datasets = ["bm", "gp", "sc18", "sc19", "sc20", "wt"]
+
     for name in datasets:
-        generate(name)
-
-
-def generate(dataset_name: str):
-    m = ResultManager(dataset_name=dataset_name)
-    ResultVisualizer(m).plot_all()
+        try:
+            generate_heatmaps(name, table_type=table_type)
+        except Exception as e:
+            print(f"[警告] 处理 {name} 时出错: {e}")
 
 
 if __name__ == "__main__":
-    generate("sc18")
-    # generate_all()
+    # 示例：生成单个数据集的图表
+    generate_heatmaps("sc18")
+
+    # 批量生成所有数据集
+    # generate_all_datasets()

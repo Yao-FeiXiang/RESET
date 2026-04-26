@@ -34,9 +34,25 @@ class RoaringBitmap {
   static constexpr int BITS_PER_WORD = 64;
   static constexpr int LOG_BITS_PER_WORD = 6;
   static constexpr int MASK_BITS_PER_WORD = 0x3F;
-  static constexpr int CONTAINER_BITS = 16;
+  // 使用21位低位数而不是16位，确保10M节点只需要1个容器
+  // 每个容器大小: 2^21 bits = 256KB，240万节点总内存 = 240万 * 256KB = 614GB
+  // 等等，太大了... 改用22位但使用动态分配：高11位选容器，低21位选位
+  // 实际上，240万节点需要22位，每个节点只需要1个容器(2^22/64=65536字=512KB)
+  // 总内存还是太大...
+  //
+  // 最终方案：放弃"每个节点独立位图"的设计
+  // 改用全局位图：所有节点共享一个连续的地址空间，直接编码node_id和neighbor_id
+  // 但这又回到了cuckoo hash的思路...
+  //
+  // 折中方案：每个节点使用 bitset，但只存储实际有邻居的字
+  // 平均度数3.89，每个节点平均只需要1个word(64bit)
+  // 总内存: 240万 * 8B = 19MB！
+  //
+  // 让我们重新设计：轻量级Roaring，每个节点只存储存在的word
+  static constexpr int CONTAINER_BITS = 22;  // 高1位选容器，低21位选位
   static constexpr int MAX_KEY_LOW = (1 << CONTAINER_BITS);
-  static constexpr int WORDS_PER_CONTAINER = MAX_KEY_LOW / BITS_PER_WORD;
+  static constexpr int WORDS_PER_CONTAINER =
+      MAX_KEY_LOW / BITS_PER_WORD;  // 65536
 
   /**
    * @brief 构造函数 - 动态计算所需内存
@@ -69,40 +85,33 @@ class RoaringBitmap {
    * @return 是否存在
    */
   __device__ bool contains(int node_id, int key) const {
-    // Roaring位图映射
-    const int container = key >> 16;   // 高16位是容器索引
-    const int bit_pos = key & 0xFFFF;  // 低16位是位位置
-    const int word_idx = bit_pos >> LOG_BITS_PER_WORD;
-    const unsigned long long bit_mask = 1ULL << (bit_pos & MASK_BITS_PER_WORD);
+    const int remapped_key = d_id_remap_[key];
+    const int word_idx = remapped_key >> LOG_BITS_PER_WORD;
+    const int bit_pos = remapped_key & MASK_BITS_PER_WORD;
+    const uint64_t bit_mask = 1ULL << bit_pos;
 
-    // 二分查找该容器是否存在于此节点
-    const int node_start = d_node_offsets_[node_id];
-    const int node_end = d_node_offsets_[node_id + 1];
-    const int num_containers_node = node_end - node_start;
+    const int start = d_node_start_[node_id];
+    const int end = d_node_start_[node_id + 1];
+    const int num_words = end - start;
 
-    if (num_containers_node == 0) return false;
+    if (num_words == 0) return false;
 
-    // 二分查找容器
-    int left = 0, right = num_containers_node - 1;
+    // 二分查找word_idx
+    int left = 0, right = num_words - 1;
     while (left <= right) {
       const int mid = (left + right) / 2;
-      const int mid_container = d_container_index_[node_start + mid];
+      const int mid_word_idx = d_word_index_[start + mid];
 
-      if (mid_container == container) {
-        // 找到容器！计算位图位置
-        // 每个container对应WORDS_PER_CONTAINER个字
-        // 使用size_t避免32位溢出
-        const size_t bitmap_offset =
-            (size_t)(node_start + mid) * (size_t)WORDS_PER_CONTAINER;
-        return (d_bitmap_[bitmap_offset + word_idx] & bit_mask) != 0;
-      } else if (mid_container < container) {
+      if (mid_word_idx == word_idx) {
+        const uint64_t word_data = d_word_data_[start + mid];
+        return (word_data & bit_mask) != 0;
+      } else if (mid_word_idx < word_idx) {
         left = mid + 1;
       } else {
         right = mid - 1;
       }
     }
 
-    // 容器不存在，key一定不存在
     return false;
   }
 
@@ -113,23 +122,22 @@ class RoaringBitmap {
   size_t total_words() const { return total_words_; }
 
  private:
-  int* d_node_offsets_;  // 每个节点在container_index数组中的起始偏移 → 长度
-                         // num_nodes+1
-  int* d_container_index_;  // 排序存储所有节点实际使用的容器编号 → 长度
-                            // total_containers
-  unsigned long long* d_bitmap_;  // 每个容器对应的位数组 → 总字数 =
-                                  // total_containers * WORDS_PER_CONTAINER
-  size_t total_words_;  // 总bitmap字数 = total_containers * WORDS_PER_CONTAINER
-  int num_nodes_;       // 节点数量
-  int total_containers_;  // 所有节点总共使用的容器总数
+  int* d_node_start_;      // 每个节点在word数组中的起始偏移
+  int* d_word_index_;      // word索引数组
+  uint64_t* d_word_data_;  // word位图数据数组
+  int* d_id_remap_;        // 节点ID重映射表
+  size_t total_words_;     // 总word数
+  int num_nodes_;          // 节点数量
 
   // 保存原始CSR数据引用，用于bulk_insert
   const std::vector<int>& csr_offsets_;
   const std::vector<int>& csr_cols_;
 
   // 主机端暂存 - 用于构建阶段
-  std::vector<int> host_node_offsets_;
-  std::vector<int> host_container_index_;
+  std::vector<int> host_node_start_;
+  std::vector<int> host_word_index_;
+  std::vector<uint64_t> host_word_data_;
+  std::vector<int> host_id_remap_;  // 主机端ID重映射表
 };
 
 #endif  // ROARING_BITMAP_CUH

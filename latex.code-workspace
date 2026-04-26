@@ -1,0 +1,22 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "C_Cpp.default.compilerPath": "/usr/bin/g++",
+    "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.cStandard": "c17",
+    "C_Cpp.default.includePath": [
+      "/usr/local/cuda/include",
+      "/usr/include",
+      "${workspaceFolder}/baseline/cuCollections/include",
+      "${workspaceFolder}/baseline/cuCollections/build/_deps/cccl-src/libcudacxx/include/"
+    ],
+    "C_Cpp.default.defines": [
+      "__CUDACC__"
+    ]
+  }
+}

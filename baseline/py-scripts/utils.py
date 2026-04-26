@@ -228,12 +228,135 @@ def ensure_executable(executable_path: Path, make_dir: Path) -> bool:
     return False
 
 
-def save_results_to_csv(results: List[Dict[str, Any]], csv_path: Path) -> None:
+def calculate_sector_per_request_row(result_row: Dict[str, Any]) -> None:
+    """
+    计算单行结果的 sector_per_request
+    参数:
+        result_row: 单行结果字典
+    """
+    req = result_row.get("L1GlobalLoadReq")
+    sec = result_row.get("L1GlobalLoadSectors")
+    if req is not None and sec is not None and req > 0:
+        result_row["sector_per_request"] = sec / req
+
+
+def calculate_sector_per_request(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    计算所有结果的 sector_per_request
+    参数:
+        results: 结果列表
+    返回:
+        添加了sector_per_request列的结果列表
+    """
+    for row in results:
+        calculate_sector_per_request_row(row)
+    return results
+
+
+def format_results_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    对单行结果进行数据格式化
+    - 时间类列(kernel_time_ms, GPU_duration_ms): 保留2位小数
+    - L1指标(L1GlobalLoadReq, L1GlobalLoadSectors): 转为整数
+    - 科学计数法列: L1GlobalLoadReq_e6, L1GlobalLoadSectors_e6 (保留2位小数)
+    - sector_per_request: 保留2位小数
+
+    参数:
+        row: 单行实验结果
+    返回:
+        格式化后的结果行
+    """
+    # 时间类列 - 保留2位小数
+    for col in ["kernel_time_ms", "GPU_duration_ms"]:
+        val = row.get(col)
+        if val is not None and isinstance(val, (int, float)):
+            row[col] = round(val, 2)
+
+    # L1GlobalLoadReq - 原始值转为整数, 添加_e6科学计数法列(保留2位小数)
+    val = row.get("L1GlobalLoadReq")
+    if val is not None and isinstance(val, (int, float)):
+        row["L1GlobalLoadReq"] = int(val)
+        row["L1GlobalLoadReq_e6"] = round(val / 1_000_000, 2)
+
+    # L1GlobalLoadSectors - 原始值转为整数, 添加_e6科学计数法列(保留2位小数)
+    val = row.get("L1GlobalLoadSectors")
+    if val is not None and isinstance(val, (int, float)):
+        row["L1GlobalLoadSectors"] = int(val)
+        row["L1GlobalLoadSectors_e6"] = round(val / 1_000_000, 2)
+
+    # sector_per_request - 保留2位小数
+    val = row.get("sector_per_request")
+    if val is not None and isinstance(val, (int, float)):
+        row["sector_per_request"] = round(val, 2)
+    elif val is not None and isinstance(val, str):
+        # 处理字符串类型
+        try:
+            row["sector_per_request"] = round(float(val), 2)
+        except ValueError:
+            row["sector_per_request"] = None
+    # 删除sector_per_request_e0列(如果存在)
+    if "sector_per_request_e0" in row:
+        del row["sector_per_request_e0"]
+
+    return row
+
+
+def format_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    格式化所有结果行
+    参数:
+        results: 结果列表
+    返回:
+        格式化后的结果列表
+    """
+    return [format_results_row(row) for row in results]
+
+
+def load_existing_results(csv_path: Path) -> List[Dict[str, Any]]:
+    """读取已有CSV结果文件"""
+    if not csv_path.exists():
+        return []
+
+    results: List[Dict[str, Any]] = []
+
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # 将字符串转换回适当的类型
+            processed: Dict[str, Any] = {}
+            for key, value in row.items():
+                if value == '' or value == 'None':
+                    processed[key] = None
+                elif key in ['timing_success']:
+                    processed[key] = value.lower() == 'true'
+                elif key in [
+                    'kernel_time_ms',
+                    'retry_count',
+                    'GPU_duration_ms',
+                    'L1GlobalLoadReq',
+                    'L1GlobalLoadSectors',
+                    'sector_per_request',
+                ]:
+                    try:
+                        processed[key] = float(value) if '.' in value else int(value)
+                    except (ValueError, TypeError):
+                        processed[key] = None
+                else:
+                    processed[key] = value
+            results.append(processed)
+
+    return results
+
+
+def save_results_to_csv(
+    results: List[Dict[str, Any]], csv_path: Path, custom_columns: Optional[List[str]] = None
+) -> None:
     """
     将实验结果保存为CSV文件
     参数:
         results: 结果列表,每个元素是一行数据字典
         csv_path: 输出CSV文件路径
+        custom_columns: 自定义列顺序（可选），如果为None则按默认顺序
     """
     if not results:
         print("⚠ 没有结果可保存")
@@ -242,8 +365,35 @@ def save_results_to_csv(results: List[Dict[str, Any]], csv_path: Path) -> None:
     # 确保输出目录存在
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 获取所有列名
-    fieldnames = list(results[0].keys())
+    # 默认列顺序
+    default_columns = [
+        "app",
+        "dataset",
+        "method_name",
+        "kernel_time_ms",
+        "GPU_duration_ms",
+        "L1GlobalLoadReq",
+        "L1GlobalLoadSectors",
+        "sector_per_request",
+        "L1GlobalLoadReq_e6",
+        "L1GlobalLoadSectors_e6",
+        "timing_success",
+        "ncu_status",
+        "retry_count",
+    ]
+
+    # 使用自定义列或默认列
+    columns_to_use = custom_columns if custom_columns else default_columns
+
+    # 获取所有列名，按自定义顺序排列，不存在的列放在后面
+    all_keys = set(results[0].keys())
+    fieldnames = []
+    for col in columns_to_use:
+        if col in all_keys:
+            fieldnames.append(col)
+            all_keys.remove(col)
+    # 添加剩余列(如果有)
+    fieldnames.extend(sorted(all_keys))
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -251,6 +401,41 @@ def save_results_to_csv(results: List[Dict[str, Any]], csv_path: Path) -> None:
         writer.writerows(results)
 
     print(f"✓ 结果已保存到: {csv_path},共 {len(results)} 行")
+
+
+def convert_csv_format(
+    input_csv_path: Path, output_csv_path: Path, custom_columns: Optional[List[str]] = None
+) -> None:
+    """
+    读取老的CSV数据，转换为新格式并输出
+    - 自动计算缺失的列（sector_per_request, _e6列）
+    - 应用新的格式化规则
+    - 按自定义列顺序输出
+    参数:
+        input_csv_path: 输入CSV文件路径
+        output_csv_path: 输出CSV文件路径
+        custom_columns: 自定义列顺序（可选）
+    """
+    if not input_csv_path.exists():
+        print(f"❌ 输入文件不存在: {input_csv_path}")
+        return
+
+    # 读取老的CSV数据
+    results = load_existing_results(input_csv_path)
+    print(f"📖 读取到 {len(results)} 条数据")
+
+    # 计算缺失的列
+    for row in results:
+        # 计算sector_per_request如果不存在
+        if "sector_per_request" not in row or row.get("sector_per_request") is None:
+            calculate_sector_per_request_row(row)
+
+    # 应用新的格式化
+    results = format_results(results)
+
+    # 保存为新格式
+    save_results_to_csv(results, output_csv_path, custom_columns)
+    print(f"✅ 转换完成: {input_csv_path.name} -> {output_csv_path.name}")
 
 
 def print_experiment_summary(config: Dict[str, Any], datasets: List[Path]) -> None:

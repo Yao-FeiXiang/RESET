@@ -77,6 +77,6 @@ int* read_int_binary(const std::string& path);
 // 检查当前GPU剩余内存是否至少需要min_required_mib MiB
 // 通过调用nvidia-smi获取剩余显存信息
 // 如果不足,打印错误信息并退出程序
-void check_gpu_memory(int min_required_mib = 25000);
+void check_gpu_memory(int min_required_mib = 20000);
 
 #endif  // UTILS_CUH

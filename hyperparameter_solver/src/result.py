@@ -1,12 +1,32 @@
 """
-结果管理器：CSV读写和可视化数据准备
-处理结果的读写，并为热力图绘制准备数据。
+结果管理器 v2.0：CSV读写和可视化数据准备
+
+优化内容：
+1. 增强的数据验证和错误处理
+2. 添加统计分析功能
+3. 支持多种格式导出
+4. 改进的合并策略
 """
 
 import os
 import csv
+import json
+import numpy as np
 from typing import Dict, List, Tuple, Any, Optional
 from collections import defaultdict
+from dataclasses import dataclass, asdict
+
+
+@dataclass
+class BestConfig:
+    """最佳配置数据类"""
+
+    alpha: float
+    b: int
+    cost: float
+    table_type: str
+    kernel_time: Optional[float] = None
+    load_sectors: Optional[float] = None
 
 
 class ResultManager:
@@ -17,18 +37,13 @@ class ResultManager:
         KEY_COLS: 用于去重的主键列
         METRICS: 要跟踪的指标列表
         path: 输出CSV文件路径
-        precisions: 保存时每个指标的小数精度
     """
 
-    # 用于识别唯一配置的主键列
     KEY_COLS = ("alpha", "b", "table_type")
 
-    # 可用指标
-    METRICS = [
-        "cost",  # 来自模型的分析成本
-        "kernel_time",  # 测量得到的内核执行时间
-        "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum",  # NCU: 全局加载扇区数
-    ]
+    METRICS = ["cost", "kernel_time", "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"]
+
+    LOAD_SECTOR_KEY = "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"
 
     def __init__(
         self,
@@ -44,31 +59,30 @@ class ResultManager:
             filename: 自定义输出文件名（覆盖默认）
             precisions: 每个指标的小数精度
         """
-        # 确保输出目录存在
         res_dir = os.path.join(os.path.dirname(__file__), "..", "res")
         os.makedirs(res_dir, exist_ok=True)
 
-        self.path = os.path.join(res_dir, filename or f"{dataset_name}.csv")
+        self.dataset_name = dataset_name or "unknown"
+        self.path = os.path.join(res_dir, filename or f"{self.dataset_name}.csv")
 
-        # CSV输出的小数精度
         self.precisions = precisions or {
             "alpha": 2,
             "b": 0,
             "cost": 6,
             "kernel_time": 6,
-            "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": 0,
+            self.LOAD_SECTOR_KEY: 0,
         }
 
-    # ------------------------------------------------------------------
-    #                          CSV 输入 / 输出
-    # ------------------------------------------------------------------
+    # ===================================================================
+    #                          CSV 读写操作
+    # ===================================================================
 
     def read_table(self) -> Dict[Tuple[Any, ...], Dict[str, Any]]:
         """
         从CSV文件读取所有结果。
 
         返回:
-        字典，键是 (alpha, b, table_type) -> 值是结果字典
+            字典，键是 (alpha, b, table_type) -> 值是结果字典
         """
         table: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
 
@@ -96,7 +110,6 @@ class ResultManager:
         # 将求解器结果（没有table_type）展开为N和H两种
         for row in rows:
             row_copy = dict(row)
-
             if "table_type" not in row_copy or not row_copy["table_type"]:
                 for table_type in ("N", "H"):
                     expanded = dict(row_copy)
@@ -111,39 +124,43 @@ class ResultManager:
             if key in table:
                 # 合并：仅更新非空字段
                 for field_name, value in normalized.items():
-                    if value != "":
+                    if value != "" and value is not None:
                         table[key][field_name] = value
             else:
                 table[key] = normalized
 
         self._write_rows(list(table.values()))
 
-    # ------------------------------------------------------------------
-    #             为可视化准备数据：热力图 + 最佳点
-    # ------------------------------------------------------------------
+    def _write_rows(self, rows: List[Dict[str, Any]]) -> None:
+        """将行写入CSV文件。"""
+        if not rows:
+            return
+
+        fieldnames = list(rows[0].keys())
+        # 确保主键列在前面
+        for col in reversed(self.KEY_COLS):
+            if col in fieldnames:
+                fieldnames.remove(col)
+                fieldnames.insert(0, col)
+
+        with open(self.path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    # ===================================================================
+    #                          数据预处理
+    # ===================================================================
 
     def calculate_best(self, eps: float = 1e-12) -> Dict[str, Dict[str, Any]]:
         """
         将原始结果处理为热力图就绪格式并找出最优点。
 
-        成本模型预测期望成本，我们找出:
-        1. 所有(alpha, b)中的全局最优
-        2. 每个alpha的最优（每个alpha对应的最佳b）
-
         参数:
             eps: 浮点比较容差
 
         返回:
-            可供可视化的字典结构:
-            {
-              "H": {
-                "x": [b values],
-                "y": [alpha values],
-                "Z_metric": {metric: 2D grid},
-                "best": {"global": (y,x), "alpha": {(y,x), ...}}
-              },
-              "N": ...
-            }
+            可供可视化的字典结构
         """
         table = self.read_table()
         if not table:
@@ -189,15 +206,12 @@ class ResultManager:
                     if metric in r:
                         Z_metric[metric][y][x] = to_float(r.get(metric))
 
-            # ==================================================================
-            # 基于分析成本找到最佳配置
-            # ==================================================================
-
+            # 寻找最佳配置
             Z_cost = Z_metric["cost"]
             global_best: Optional[Tuple[int, int]] = None
             alpha_local_best: set[Tuple[int, int]] = set()
 
-            # 寻找全局最优（最低成本）
+            # 全局最优（最低成本）
             min_cost = 1e10
             for y in range(len(alphas)):
                 for x in range(len(bs)):
@@ -208,15 +222,14 @@ class ResultManager:
                         min_cost = cost
                         global_best = (y, x)
 
-            # 寻找每个alpha的最优（每个alpha对应的最佳b）
+            # 每个alpha的最优
             for y in range(len(alphas)):
                 row = Z_cost[y]
                 valid_points = [(x, cost) for x, cost in enumerate(row) if cost is not None]
                 if not valid_points:
                     continue
-                # 在本行寻找最小值
+
                 min_row_cost = min(cost for _, cost in valid_points)
-                # Find first point matching minimum
                 x_best = None
                 for x, cost in valid_points:
                     if abs(cost - min_row_cost) <= eps:
@@ -234,75 +247,144 @@ class ResultManager:
 
         return result
 
-    # ------------------------------------------------------------------
-    #                          Internal Helpers
-    # ------------------------------------------------------------------
+    # ===================================================================
+    #                          统计分析功能
+    # ===================================================================
+
+    def get_best_config(self, table_type: str = "H", metric: str = "cost") -> BestConfig:
+        """
+        获取指定指标的最佳配置。
+
+        参数:
+            table_type: 表类型 ("N" 或 "H")
+            metric: 优化指标
+
+        返回:
+            BestConfig 数据类实例
+        """
+        processed = self.calculate_best()
+        if table_type not in processed:
+            raise ValueError(f"无效的 table_type: {table_type}")
+
+        data = processed[table_type]
+        Z = np.array(data["Z_metric"][metric], dtype=float)
+        alphas = data["y"]
+        bs = data["x"]
+
+        # 找到最小值位置
+        Z_masked = np.ma.masked_invalid(Z)
+        min_idx = np.unravel_index(np.argmin(Z_masked), Z.shape)
+        y, x = min_idx
+
+        # 获取所有指标的值
+        metrics_data = data["Z_metric"]
+        return BestConfig(
+            alpha=float(alphas[y]),
+            b=int(bs[x]),
+            cost=float(metrics_data["cost"][y][x]),
+            table_type=table_type,
+            kernel_time=(
+                float(metrics_data["kernel_time"][y][x])
+                if metrics_data["kernel_time"][y][x] is not None
+                else None
+            ),
+            load_sectors=(
+                float(metrics_data[self.LOAD_SECTOR_KEY][y][x])
+                if metrics_data[self.LOAD_SECTOR_KEY][y][x] is not None
+                else None
+            ),
+        )
+
+    def get_statistics(self, table_type: str = "H") -> Dict[str, Any]:
+        """
+        获取结果统计信息。
+
+        返回:
+            包含各种统计数据的字典
+        """
+        processed = self.calculate_best()
+        if table_type not in processed:
+            return {}
+
+        data = processed[table_type]
+        stats = {}
+
+        for metric in self.METRICS:
+            Z = np.array(data["Z_metric"][metric], dtype=float)
+            Z_valid = Z[np.isfinite(Z)]
+            if len(Z_valid) > 0:
+                stats[metric] = {
+                    "mean": float(np.mean(Z_valid)),
+                    "std": float(np.std(Z_valid)),
+                    "min": float(np.min(Z_valid)),
+                    "max": float(np.max(Z_valid)),
+                    "median": float(np.median(Z_valid)),
+                }
+
+        return stats
+
+    def export_summary(self, output_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        导出结果摘要为JSON格式。
+
+        参数:
+            output_path: 输出文件路径，None则不保存文件
+
+        返回:
+            摘要字典
+        """
+        summary = {
+            "dataset": self.dataset_name,
+            "csv_path": self.path,
+            "total_rows": len(self.read_table()),
+        }
+
+        for table_type in ["N", "H"]:
+            try:
+                best = self.get_best_config(table_type)
+                stats = self.get_statistics(table_type)
+                summary[table_type] = {"best_config": asdict(best), "statistics": stats}
+            except Exception:
+                pass
+
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False)
+
+        return summary
+
+    # ===================================================================
+    #                          内部辅助函数
+    # ===================================================================
 
     def _normalize_row(self, row: Dict[str, Any]) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
         """
-        Normalize row: extract key, convert types, apply rounding.
+        标准化行：提取键，转换类型，应用舍入。
 
-        Returns:
-            (key_tuple, normalized_row) where key_tuple = (alpha, b, table_type)
+        返回:
+            (key_tuple, normalized_row) 其中 key_tuple = (alpha, b, table_type)
         """
         for key in self.KEY_COLS:
             if key not in row:
-                raise KeyError(f"Missing required key '{key}' in row: {row}")
+                raise KeyError(f"行中缺少必需的键 '{key}': {row}")
 
-        alpha = float(row["alpha"])
+        alpha = round(float(row["alpha"]), self.precisions.get("alpha", 2))
         b = int(float(row["b"]))
-        table_type = str(row["table_type"])
+        table_type = str(row["table_type"]).strip()
+        key = (alpha, b, table_type)
 
-        normalized: Dict[str, Any] = {"alpha": alpha, "b": b, "table_type": table_type}
+        normalized = {"alpha": alpha, "b": b, "table_type": table_type}
 
-        # Normalize other fields
-        for key, value in row.items():
-            if key in normalized:
-                continue
-            if value is None or value == "":
-                normalized[key] = ""
-                continue
-
-            processed_value = value
-            if isinstance(processed_value, str):
-                s = processed_value.strip()
-                if s == "":
-                    normalized[key] = ""
-                    continue
+        # 处理所有指标
+        for metric in self.METRICS:
+            if metric in row and row[metric] != "" and row[metric] is not None:
                 try:
-                    processed_value = float(s)
-                except ValueError:
-                    normalized[key] = processed_value
-                    continue
+                    value = float(row[metric])
+                    precision = self.precisions.get(metric, 6)
+                    normalized[metric] = round(value, precision)
+                except (ValueError, TypeError):
+                    normalized[metric] = row[metric]
+            else:
+                normalized[metric] = ""
 
-            # Apply precision rounding
-            precision = self.precisions.get(key)
-            if precision is not None and isinstance(processed_value, (int, float)):
-                if precision <= 0:
-                    processed_value = int(round(processed_value))
-                else:
-                    processed_value = round(float(processed_value), precision)
-
-            normalized[key] = processed_value
-
-        return (alpha, b, table_type), normalized
-
-    def _write_rows(self, rows: List[Dict[str, Any]]) -> None:
-        if not rows:
-            return
-        cleaned_rows: List[Dict[str, Any]] = []
-        for r in rows:
-            rr = dict(r)
-            rr.pop("isBest", None)
-            cleaned_rows.append(rr)
-
-        cols = set()
-        for r in cleaned_rows:
-            cols.update(r.keys())
-        fieldnames = list(self.KEY_COLS) + sorted(cols - set(self.KEY_COLS))
-
-        with open(self.path, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            for r in cleaned_rows:
-                w.writerow({k: r.get(k, "") for k in fieldnames})
+        return key, normalized

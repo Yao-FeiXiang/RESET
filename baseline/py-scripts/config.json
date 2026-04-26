@@ -1,14 +1,26 @@
 {
+    "//1": "==================== 应用基础配置 ====================",
     "app": {
         "name": "sss",
         "executable": "../../sss/sss",
         "dataset_root": "../../graph_datasets",
-        "output_dir": "./output"
+        "output_dir": "./output",
+        "log_dir": "./logs",
+        "csv_filename": "result.csv"
     },
+    "//2": "==================== 实验过滤配置 ====================",
+    "filter": {
+        "//datasets": "要运行的数据集列表，空数组表示全部运行",
+        "datasets": [],
+        "//methods": "要运行的方法列表，空数组表示全部运行",
+        "methods": []
+    },
+    "//3": "==================== 哈希表参数 ====================",
     "experiment": {
         "alpha": 0.2,
         "bucket": 5
     },
+    "//4": "==================== NCU 性能采集 ====================",
     "ncu": {
         "tmp_dir": "~/ncu_tmp",
         "metrics_map": {
@@ -16,21 +28,26 @@
             "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadReq",
             "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadSectors"
         },
-        "launch_skip": 0,
-        "launch_count": 1
+        "default_launch_skip": 0,
+        "default_launch_count": 1
     },
+    "//5": "==================== 测试方法配置 ====================",
     "methods": [
         {
             "method_name": "Native",
             "output_tag": "Native",
             "kernel_name": "sss_kernel",
-            "is_original": true
+            "is_original": true,
+            "launch_skip": 0,
+            "launch_count": 1
         },
         {
             "method_name": "RESET",
             "output_tag": "RESET",
             "kernel_name": "sss_kernel",
-            "is_original": true
+            "is_original": true,
+            "launch_skip": 1,
+            "launch_count": 1
         },
         {
             "method_name": "cuCollections",
@@ -57,11 +74,26 @@
             "is_original": false
         }
     ],
+    "//6": "==================== 健壮性配置 ====================",
     "robustness": {
-        "command_timeout_seconds": 90,
-        "max_retries": 2
+        "command_timeout_seconds": 180,
+        "max_retries": 2,
+        "ncu_timeout_multiplier": 5
     },
-    "logging": {
-        "log_dir": "./logs"
-    }
+    "//7": "==================== CSV 输出配置 ====================",
+    "csv_columns": [
+        "app",
+        "dataset",
+        "method_name",
+        "kernel_time_ms",
+        "L1GlobalLoadReq_e6",
+        "L1GlobalLoadSectors_e6",
+        "sector_per_request",
+        "L1GlobalLoadReq",
+        "L1GlobalLoadSectors",
+        "GPU_duration_ms",
+        "timing_success",
+        "ncu_status",
+        "retry_count"
+    ]
 }
