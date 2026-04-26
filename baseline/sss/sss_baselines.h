@@ -3,6 +3,7 @@
 
 #include <cuda_runtime.h>
 
+#include <utility>
 #include <vector>
 
 /**
@@ -31,34 +32,34 @@
  * @param stream CUDA流
  * @return int 符合条件的结果数量
  */
-int run_sss_cuckoo(int num_pairs, int num_nodes, int const* d_vertexs,
-                   int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
-                   int const* d_csr_offsets,
-                   std::vector<int> const& csr_offsets_host,
-                   std::vector<int> const& csr_cols_host, float threshold,
-                   int grid_size, int block_size, int CHUNK_SIZE,
-                   float load_factor = 0.25, cudaStream_t stream = 0);
+std::pair<int, float> run_sss_cuckoo(
+    int num_pairs, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor = 0.25,
+    cudaStream_t stream = 0);
 
 /**
  * @brief 使用跳房子哈希运行集合相似度搜索
  */
-int run_sss_hopscotch(int num_pairs, int num_nodes, int const* d_vertexs,
-                      int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
-                      int const* d_csr_offsets,
-                      std::vector<int> const& csr_offsets_host,
-                      std::vector<int> const& csr_cols_host, float threshold,
-                      int grid_size, int block_size, int CHUNK_SIZE,
-                      float load_factor = 0.25, cudaStream_t stream = 0);
+std::pair<int, float> run_sss_hopscotch(
+    int num_pairs, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor = 0.25,
+    cudaStream_t stream = 0);
 
 /**
  * @brief 使用咆哮位图运行集合相似度搜索
  */
-int run_sss_roaring(int num_pairs, int num_nodes, int const* d_vertexs,
-                    int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
-                    int const* d_csr_offsets,
-                    std::vector<int> const& csr_offsets_host,
-                    std::vector<int> const& csr_cols_host, float threshold,
-                    int grid_size, int block_size, int CHUNK_SIZE,
-                    float load_factor = 0.25, cudaStream_t stream = 0);
+std::pair<int, float> run_sss_roaring(
+    int num_pairs, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor = 0.25,
+    cudaStream_t stream = 0);
 
 #endif  // SSS_BASELINES_H

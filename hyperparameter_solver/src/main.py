@@ -27,7 +27,7 @@ MODE = "sss"
 # 图数据集路径
 GRAPH_DIR = "../../graph_datasets"
 # 是否运行完整NCU测量 (True) 或仅运行分析预测 (False)
-EXECUTE_ALL = True
+EXECUTE_ALL = False
 
 
 # ============================================================================

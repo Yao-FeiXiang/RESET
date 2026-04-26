@@ -1,6 +1,8 @@
 #include <cooperative_groups.h>
 #include <thrust/device_vector.h>
+#include <thrust/iterator/zip_iterator.h>
 #include <thrust/sort.h>
+#include <thrust/tuple.h>
 
 #include "ir.cuh"
 

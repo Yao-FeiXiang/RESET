@@ -105,13 +105,12 @@ int find_max_key(const std::vector<int>& csr_cols) {
   return max_key;
 }
 
-int run_sss_roaring(int num_pairs, int num_nodes, int const* d_vertexs,
-                    int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
-                    int const* d_csr_offsets,
-                    std::vector<int> const& csr_offsets_host,
-                    std::vector<int> const& csr_cols_host, float threshold,
-                    int grid_size, int block_size, int CHUNK_SIZE,
-                    float load_factor, cudaStream_t stream) {
+std::pair<int, float> run_sss_roaring(
+    int num_pairs, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor, cudaStream_t stream) {
   // 创建Roaring位图 - 动态压缩，只分配实际使用的容器
   RoaringBitmap* d_bitmap;
   cudaMallocManaged(&d_bitmap, sizeof(RoaringBitmap));
@@ -128,10 +127,24 @@ int run_sss_roaring(int num_pairs, int num_nodes, int const* d_vertexs,
   cudaMemset(d_G_index, 0, sizeof(int));
   cudaMemset(d_results, 0, num_pairs * sizeof(int));
 
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
   // 启动查询内核
+  cudaEventRecord(start, stream);
   sss_roaring_kernel<<<grid_size, block_size>>>(
       d_bitmap, num_pairs, d_vertexs, d_csr_cols_for_vertexs, d_csr_cols,
       d_csr_offsets, d_results, d_G_index, CHUNK_SIZE, threshold);
+  cudaEventRecord(stop, stream);
+  cudaEventSynchronize(stop);
+
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 
   // 读取结果并累加
   std::vector<int> h_results(num_pairs);
@@ -152,7 +165,7 @@ int run_sss_roaring(int num_pairs, int num_nodes, int const* d_vertexs,
   cudaFree(d_results);
   cudaFree(d_G_index);
 
-  printf("[咆哮位图] 节点数: %d, 总字数: %zu\n", num_nodes, total_words);
+  // printf("[Roaring] 节点数: %d, 总字数: %zu\n", num_nodes, total_words);
 
-  return result_count;
+  return {result_count, kernel_time_ms};
 }

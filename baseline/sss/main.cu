@@ -107,12 +107,14 @@ int main(int argc, char* argv[]) {
   printf("最大度数: %d\n", max_degree);
 
   // ==================== 构建哈希表 ====================
+  // 使用完整邻居列表构建哈希表(基线方法的标准做法)
+  // 注意: 与set-similarity-search的差异在于排序和计时范围,已对齐
   SSSBaseline baseline;
   baseline.build_hash_tables(graph.get_num_nodes(), graph.get_host_offsets(),
                              graph.get_host_elements(), load_factor,
                              bucket_size);
 
-  // 加载顶点对
+  // 加载顶点对到设备
   baseline.load_vertex_pairs(vertexs_path);
   baseline.allocate_buffers();
 
@@ -124,6 +126,11 @@ int main(int argc, char* argv[]) {
 
   check_gpu_memory();
 
+  // 预排序CSR列(用于hierarchical哈希),在计时前完成(与set-similarity-search一致)
+  if (run_original) {
+    baseline.pre_sort_csr_cols(graph);
+  }
+
   // 清空L2缓存(保证公平)
   l2flush flush;
 
@@ -133,28 +140,25 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    double time_start = clock();
-    int result_normal =
+    auto [result_normal, kernel_time_normal] =
         baseline.run_normal(graph, CHUNK_SIZE, grid_size, block_size,
                             bucket_size, threshold, false);
-    double time_end = clock();
-    double cmp_time = (time_end - time_start) / CLOCKS_PER_SEC;
 
-    std::cout << "[普通哈希] 内核执行时间: " << cmp_time << " 秒" << std::endl;
-    printf("[普通哈希] 集合相似度结果数: %d\n", result_normal);
+    std::cout << "[Native] 内核执行时间: " << kernel_time_normal / 1000.0
+              << " 秒" << std::endl;
+    printf("[Native] 集合相似度结果数: %d\n", result_normal);
 
     // 分层哈希
     std::cout << std::endl;
 
     flush.flush();
-    time_start = clock();
-    int result_hierarchical = baseline.run_hierarchical(
-        graph, CHUNK_SIZE, grid_size, block_size, bucket_size, threshold, true);
-    time_end = clock();
-    cmp_time = (time_end - time_start) / CLOCKS_PER_SEC;
+    auto [result_hierarchical, kernel_time_hierarchical] =
+        baseline.run_hierarchical(graph, CHUNK_SIZE, grid_size, block_size,
+                                  bucket_size, threshold, true);
 
-    std::cout << "[分层哈希] 内核执行时间: " << cmp_time << " 秒" << std::endl;
-    printf("[分层哈希] 集合相似度结果数: %d\n", result_hierarchical);
+    std::cout << "[RESET] 内核执行时间: " << kernel_time_hierarchical / 1000.0
+              << " 秒" << std::endl;
+    printf("[RESET] 集合相似度结果数: %d\n", result_hierarchical);
 
     // 一致性检查
     if (result_normal != result_hierarchical) {
@@ -168,20 +172,16 @@ int main(int argc, char* argv[]) {
   if (run_cucollections) {
     std::cout << std::endl;
     flush.flush();
-    double time_start = clock();
 
-    int result_cuco = run_sss_cuco(
+    auto [result_cuco, kernel_time_cuco] = run_sss_cuco(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
 
-    double time_end = clock();
-    double cmp_time = (time_end - time_start) / CLOCKS_PER_SEC;
-
-    std::cout << "[cuCollections] 内核执行时间: " << cmp_time << " 秒"
-              << std::endl;
+    std::cout << "[cuCollections] 内核执行时间: " << kernel_time_cuco / 1000.0
+              << " 秒" << std::endl;
     printf("[cuCollections] 集合相似度结果数: %d\n", result_cuco);
   }
 
@@ -190,21 +190,16 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    double time_start = clock();
-
-    int result_cuckoo = run_sss_cuckoo(
+    auto [result_cuckoo, kernel_time_cuckoo] = run_sss_cuckoo(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
 
-    double time_end = clock();
-    double cmp_time = (time_end - time_start) / CLOCKS_PER_SEC;
-
-    std::cout << "[布谷鸟哈希] 内核执行时间: " << cmp_time << " 秒"
-              << std::endl;
-    printf("[布谷鸟哈希] 集合相似度结果数: %d\n", result_cuckoo);
+    std::cout << "[Cuckoo] 内核执行时间: " << kernel_time_cuckoo / 1000.0
+              << " 秒" << std::endl;
+    printf("[Cuckoo] 集合相似度结果数: %d\n", result_cuckoo);
   }
 
   // ==================== 跳房子哈希 ====================
@@ -212,21 +207,16 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    double time_start = clock();
-
-    int result_hopscotch = run_sss_hopscotch(
+    auto [result_hopscotch, kernel_time_hopscotch] = run_sss_hopscotch(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
 
-    double time_end = clock();
-    double cmp_time = (time_end - time_start) / CLOCKS_PER_SEC;
-
-    std::cout << "[跳房子哈希] 内核执行时间: " << cmp_time << " 秒"
-              << std::endl;
-    printf("[跳房子哈希] 集合相似度结果数: %d\n", result_hopscotch);
+    std::cout << "[Hopscotch] 内核执行时间: " << kernel_time_hopscotch / 1000.0
+              << " 秒" << std::endl;
+    printf("[Hopscotch] 集合相似度结果数: %d\n", result_hopscotch);
   }
 
   // ==================== 咆哮位图 ====================
@@ -234,20 +224,16 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    double time_start = clock();
-
-    int result_roaring = run_sss_roaring(
+    auto [result_roaring, kernel_time_roaring] = run_sss_roaring(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
 
-    double time_end = clock();
-    double cmp_time = (time_end - time_start) / CLOCKS_PER_SEC;
-
-    std::cout << "[咆哮位图] 内核执行时间: " << cmp_time << " 秒" << std::endl;
-    printf("[咆哮位图] 集合相似度结果数: %d\n", result_roaring);
+    std::cout << "[Roaring] 内核执行时间: " << kernel_time_roaring / 1000.0
+              << " 秒" << std::endl;
+    printf("[Roaring] 集合相似度结果数: %d\n", result_roaring);
   }
 
   return 0;

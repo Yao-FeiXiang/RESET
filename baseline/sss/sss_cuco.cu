@@ -143,36 +143,55 @@ __global__ void sss_cuco_kernel(
  * @brief 主机端启动SSS cuCollections查询的接口
  * 完全对齐baseline实现
  */
-int run_sss_cuco(int num_edges, int num_nodes, int const* d_vertexs,
-                 int const* d_csr_cols_for_edges, int const* d_csr_cols,
-                 int const* d_csr_offsets,
-                 std::vector<int> const& csr_offsets_host,
-                 std::vector<int> const& csr_cols_host, float threshold,
-                 int grid_size, int block_size, int CHUNK_SIZE,
-                 float load_factor, cudaStream_t stream) {
-  // 构建cuCollections集合
+std::pair<int, float> run_sss_cuco(
+    int num_edges, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_edges, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor, cudaStream_t stream) {
+  cudaEvent_t e1, e2, e3, e4;
+  cudaEventCreate(&e1);
+  cudaEventCreate(&e2);
+  cudaEventCreate(&e3);
+  cudaEventCreate(&e4);
+
+  float t_build = 0.0f, t_alloc = 0.0f, t_kernel = 0.0f;
+
+  // 阶段1: 构建cuCollections集合
+  cudaEventRecord(e1, stream);
   std::size_t total_edges = csr_cols_host.size();
   SSSCuCollections sss_cuco(total_edges);
   sss_cuco.build(csr_offsets_host, csr_cols_host, num_nodes, stream);
+  cudaEventRecord(e2, stream);
+  cudaEventSynchronize(e2);
+  cudaEventElapsedTime(&t_build, e1, e2);
 
-  // 分配结果数组 - 每个边一个标志
+  // 阶段2: 分配结果数组
   int* d_results = nullptr;
   cudaMalloc(&d_results, static_cast<std::size_t>(num_edges) * sizeof(int));
   cudaMemsetAsync(d_results, 0,
                   static_cast<std::size_t>(num_edges) * sizeof(int), stream);
 
-  // 动态负载均衡的全局索引
   int* d_G_index = nullptr;
   cudaMalloc(&d_G_index, sizeof(int));
   int h_G_index = grid_size * block_size / 32 * CHUNK_SIZE;
   cudaMemcpyAsync(d_G_index, &h_G_index, sizeof(int), cudaMemcpyHostToDevice,
                   stream);
+  cudaEventRecord(e3, stream);
+  cudaEventSynchronize(e3);
+  cudaEventElapsedTime(&t_alloc, e2, e3);
 
-  // 启动内核
+  // 阶段3: 查询内核
   auto contains_ref = sss_cuco.get_contains_ref();
   sss_cuco_kernel<<<grid_size, block_size, 0, stream>>>(
       num_edges, d_vertexs, d_csr_cols_for_edges, d_csr_cols, d_csr_offsets,
       contains_ref, d_results, d_G_index, CHUNK_SIZE, threshold);
+  cudaEventRecord(e4, stream);
+  cudaEventSynchronize(e4);
+  cudaEventElapsedTime(&t_kernel, e3, e4);
+
+  printf("[cuCO 细分] 构建: %.3f ms, 分配: %.3f ms, 内核: %.3f ms\n", t_build,
+         t_alloc, t_kernel);
 
   // 读取结果并累加
   std::vector<int> h_results(num_edges);
@@ -187,7 +206,11 @@ int run_sss_cuco(int num_edges, int num_nodes, int const* d_vertexs,
 
   cudaFree(d_results);
   cudaFree(d_G_index);
+  cudaEventDestroy(e1);
+  cudaEventDestroy(e2);
+  cudaEventDestroy(e3);
+  cudaEventDestroy(e4);
 
   cudaStreamSynchronize(stream);
-  return result_count;
+  return {result_count, t_kernel};
 }

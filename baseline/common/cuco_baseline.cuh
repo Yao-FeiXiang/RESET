@@ -25,8 +25,8 @@ template <typename KeyType>
 class CuCollectionsStaticSetBase {
  public:
   using key_type = KeyType;
-  using hasher = cuco::detail::XXHash_32<key_type>;
-  using probing = cuco::double_hashing<1, hasher, hasher>;
+  using hasher = cuco::murmurhash3_32<key_type>;
+  using probing = cuco::linear_probing<1, hasher>;  // 改用线性探测替代双重哈希
   using set_type = cuco::static_set<key_type, cuco::extent<std::size_t>,
                                     cuda::thread_scope_device,
                                     cuda::std::equal_to<key_type>, probing>;
@@ -37,7 +37,8 @@ class CuCollectionsStaticSetBase {
    */
   explicit CuCollectionsStaticSetBase(std::size_t capacity)
       : empty_key_(std::numeric_limits<key_type>::max()),
-        set_(capacity, cuco::empty_key{empty_key_}) {}
+        set_(static_cast<std::size_t>(capacity * 2.0),  // 2倍容量降低负载因子
+             cuco::empty_key{empty_key_}) {}
 
   /**
    * @brief 析构函数

@@ -1,8 +1,17 @@
-GRAPH_DATASET_NAME = sc20 #sc18,sc19,sc20,bm,gp,wt
-IR_DATASET_NAME = fever #cqadupstack,fever,hotpotqa,lt,msmarco,nq
+GRAPH_DATASET_NAME = sc19 #sc18,sc19,sc20,bm,gp,wt
+IR_DATASET_NAME = fe #cqadupstack,fever,hotpotqa,lt,msmarco,nq
 
-CUDA_HOME ?= /home/cliu26/cuda-12.6 
+# Parallel compilation: use make -jN or set MAKEFLAGS
+MAKEFLAGS += -j$(shell nproc)
+
+CCACHE := $(shell command -v ccache 2> /dev/null)
+
+# Line info: default off, enable with LINEINFO=1
+LINEINFO ?= 0
+
+CUDA_HOME ?= /home/cliu26/cuda-12.6              
 # CUCO_ROOT := ../baseline/cuCollections
+
 CUCO_ROOT := ./cuCollections
 CUCO_BUILD := $(CUCO_ROOT)/build
 CCCL_SRC  := $(CUCO_BUILD)/_deps/cccl-src
@@ -10,12 +19,12 @@ CCCL_LIBCUDACXX := $(CCCL_SRC)/libcudacxx/include
 CCCL_THRUST     := $(CCCL_SRC)/thrust
 CCCL_CUB        := $(CCCL_SRC)/cub
 
-NVCC = $(CUDA_HOME)/bin/nvcc
-NVCC_FLAGS = -O3 -std=c++17 -arch=sm_80 -lineinfo -Xcompiler -fopenmp \
-  -I$(CUCO_ROOT)/include \
+NVCC = $(if $(CCACHE),$(CCACHE) ,)$(CUDA_HOME)/bin/nvcc
+NVCC_FLAGS = -O3 -std=c++17 -arch=sm_80 $(if $(filter 1,$(LINEINFO)),-lineinfo) -Xcompiler -fopenmp \
   -I$(CCCL_LIBCUDACXX) \
-  -I$(CCCL_THRUST) \
   -I$(CCCL_CUB) \
+  -I$(CCCL_THRUST) \
+  -I$(CUCO_ROOT)/include \
   -I$(CUDA_HOME)/targets/x86_64-linux/include \
   --expt-extended-lambda --expt-relaxed-constexpr
 
@@ -39,16 +48,23 @@ tc_OBJS  := $(tc_SRCS:.cu=.o)
 all: $(EXPERIMENTS)
 
 %.o: %.cu
+	@echo "Compiling $<"
 	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
 
 ir: $(COMMON_OBJS) $(ir_OBJS)
+	@echo "Linking ir/ir"
 	$(NVCC) $(NVCC_FLAGS) $^ -o ir/ir
+	@echo "✓ ir build successful"
 
 sss: $(COMMON_OBJS) $(sss_OBJS)
+	@echo "Linking sss/sss"
 	$(NVCC) $(NVCC_FLAGS) $^ -o sss/sss
+	@echo "✓ sss build successful"
 
 tc: $(COMMON_OBJS) $(tc_OBJS)
+	@echo "Linking tc/tc"
 	$(NVCC) $(NVCC_FLAGS) $^ -o tc/tc
+	@echo "✓ tc build successful"
 
 test-ir: ir
 	./ir/ir ../ir_datasets/$(IR_DATASET_NAME)
@@ -59,7 +75,7 @@ test-sss: sss
 test-tc: tc
 	./tc/tc ../graph_datasets/$(GRAPH_DATASET_NAME)
 
-test-all:
+test-sss-all:
 	./sss/sss ../graph_datasets/$(GRAPH_DATASET_NAME) --method=all
 clean:
 	rm -f $(COMMON_DIR)/*.o ir/*.o ir/ir sss/*.o sss/sss tc/*.o tc/tc

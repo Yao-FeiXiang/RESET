@@ -3,7 +3,7 @@ set -euo pipefail
 
 JAVA="${JAVA:-java}"
 
-MVN="${MVN:-mvn}" #服务器的系统默认没有maven,得在用户态再装一下
+MVN="${MVN:-mvn}" 
 
 MAIN_CLASS="${MAIN_CLASS:-Main}"
 

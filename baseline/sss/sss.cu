@@ -1,6 +1,8 @@
 #include <cooperative_groups.h>
 #include <thrust/device_vector.h>
+#include <thrust/iterator/zip_iterator.h>
 #include <thrust/sort.h>
+#include <thrust/tuple.h>
 
 #include "sss.cuh"
 
@@ -166,57 +168,83 @@ void SSSBaseline::allocate_buffers() {
   cudaMemset(d_results_, 0, num_edges_ * sizeof(int));
 }
 
-int SSSBaseline::run_hierarchical(CSRGraph& graph, int CHUNK_SIZE,
-                                  int grid_size, int block_size,
-                                  int bucket_size, float threshold,
-                                  bool sorted) {
+// 预排序CSR列(用于hierarchical哈希),在计时前完成
+void SSSBaseline::pre_sort_csr_cols(CSRGraph& graph) {
+  std::vector<int> sorted_cols = graph.get_host_elements();
+  gpu_sort_csr_cols(sorted_cols, graph.get_host_offsets(),
+                    graph.get_num_nodes(), get_max_length());
+  cudaMalloc(&d_csr_cols_sorted_, sorted_cols.size() * sizeof(int));
+  cudaMemcpy(d_csr_cols_sorted_, sorted_cols.data(),
+             sorted_cols.size() * sizeof(int), cudaMemcpyHostToDevice);
+}
+
+std::pair<int, float> SSSBaseline::run_hierarchical(
+    CSRGraph& graph, int CHUNK_SIZE, int grid_size, int block_size,
+    int bucket_size, float threshold, bool sorted) {
   int h_G_index = grid_size * block_size / warpSize * CHUNK_SIZE;
   cudaMalloc(&d_G_index_, sizeof(int));
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
 
-  // 如果需要排序,准备排序后的CSR
-  int* d_csr_cols_ptr;
-  if (sorted) {
-    std::vector<int> sorted_cols = graph.get_host_elements();
-    gpu_sort_csr_cols(sorted_cols, graph.get_host_offsets(),
-                      graph.get_num_nodes(), get_max_length());
-    cudaMalloc(&d_csr_cols_sorted_, sorted_cols.size() * sizeof(int));
-    cudaMemcpy(d_csr_cols_sorted_, sorted_cols.data(),
-               sorted_cols.size() * sizeof(int), cudaMemcpyHostToDevice);
-    d_csr_cols_ptr = d_csr_cols_sorted_;
-  } else {
-    d_csr_cols_ptr = graph.get_device_elements();
-  }
+  // 使用预排序的CSR列(排序已在计时外完成)
+  int* d_csr_cols_ptr =
+      sorted ? d_csr_cols_sorted_ : graph.get_device_elements();
 
   cudaMemset(d_results_, 0, num_edges_ * sizeof(int));
 
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   sss_kernel<<<grid_size, block_size>>>(
       num_edges_, d_vertexs_, d_csr_cols_ptr, graph.get_device_offsets(),
       get_d_hash_length(), get_d_hash_hierarchical(),
       get_d_hash_tables_offset(), d_results_, d_G_index_, CHUNK_SIZE, true,
       get_max_length(), get_bucket_num(), threshold, bucket_size);
-  cudaDeviceSynchronize();
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
 
-  return get_result_count();
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+
+  return {get_result_count(), kernel_time_ms};
 }
 
-int SSSBaseline::run_normal(CSRGraph& graph, int CHUNK_SIZE, int grid_size,
-                            int block_size, int bucket_size, float threshold,
-                            bool sorted) {
+std::pair<int, float> SSSBaseline::run_normal(CSRGraph& graph, int CHUNK_SIZE,
+                                              int grid_size, int block_size,
+                                              int bucket_size, float threshold,
+                                              bool sorted) {
   int h_G_index = grid_size * block_size / warpSize * CHUNK_SIZE;
   cudaMalloc(&d_G_index_, sizeof(int));
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemset(d_results_, 0, num_edges_ * sizeof(int));
 
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
+  cudaEventRecord(start);
   sss_kernel<<<grid_size, block_size>>>(
       num_edges_, d_vertexs_, graph.get_device_elements(),
       graph.get_device_offsets(), get_d_hash_length(), get_d_hash_normal(),
       get_d_hash_tables_offset(), d_results_, d_G_index_, CHUNK_SIZE, false,
       get_max_length(), get_bucket_num(), threshold, bucket_size);
-  cudaDeviceSynchronize();
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
 
-  return get_result_count();
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+
+  return {get_result_count(), kernel_time_ms};
 }
 
 // 统计超过阈值的结果数量

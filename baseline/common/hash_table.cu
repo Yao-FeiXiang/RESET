@@ -66,10 +66,10 @@ __global__ void build_normal_kernel(int* hash_table, int* hash_length,
   }
 }
 
-void HashTableBuilder::build_hash_tables(int num_nodes,
-                                         const std::vector<int>& h_offsets,
-                                         const std::vector<int>& h_elements,
-                                         float load_factor, int bucket_size) {
+void HashTableBuilder::build_hash_tables(
+    int num_nodes, const std::vector<int>& h_offsets,
+    const std::vector<int>& h_elements, float load_factor, int bucket_size,
+    const std::vector<int>& vertexs, const std::vector<int>& vertex_csr_cols) {
   // Allocate and copy offsets to device
   cudaMalloc(&d_hash_length_, sizeof(int) * num_nodes);
   int* d_offsets;
@@ -123,18 +123,29 @@ void HashTableBuilder::build_hash_tables(int num_nodes,
              sizeof(int) * bucket_num_ * bucket_size);
   cudaMemset(d_hash_table_normal_, -1, sizeof(int) * bucket_num_ * bucket_size);
 
-  // Collect node_ids and elements on host
+  // 如果提供了顶点对数据,使用顶点对构建哈希表(与set-similarity-search一致)
+  // 否则使用完整邻居列表构建
   std::vector<int> node_ids;
   std::vector<int> elements;
-  node_ids.reserve(h_elements.size());
-  elements.reserve(h_elements.size());
-  for (int i = 0; i < num_nodes; i++) {
-    int start = h_offsets[i];
-    int end = h_offsets[i + 1];
-    for (int j = start; j < end; j++) {
-      node_ids.push_back(i);
-      elements.push_back(h_elements[j]);
+
+  if (!vertexs.empty() && !vertex_csr_cols.empty()) {
+    // 使用顶点对数据构建哈希表
+    node_ids = vertexs;
+    elements = vertex_csr_cols;
+    printf("使用顶点对数据构建哈希表, 数据量: %zu\n", node_ids.size());
+  } else {
+    // 使用完整邻居列表构建哈希表(原有行为)
+    node_ids.reserve(h_elements.size());
+    elements.reserve(h_elements.size());
+    for (int i = 0; i < num_nodes; i++) {
+      int start = h_offsets[i];
+      int end = h_offsets[i + 1];
+      for (int j = start; j < end; j++) {
+        node_ids.push_back(i);
+        elements.push_back(h_elements[j]);
+      }
     }
+    printf("使用完整邻居列表构建哈希表, 数据量: %zu\n", node_ids.size());
   }
 
   // Copy to device
@@ -148,27 +159,32 @@ void HashTableBuilder::build_hash_tables(int num_nodes,
 
   int* d_conflict_count;
   cudaMalloc(&d_conflict_count, sizeof(int));
-  cudaMemset(d_conflict_count, 0, sizeof(int));
-  printf("start building hash tables...\n");
-
-  // Build hierarchical hash table
-  build_hierarchical_kernel<<<(node_ids.size() + 1024 - 1) / 1024, 1024>>>(
-      d_hash_table_hierarchical_, d_hash_length_, d_hash_tables_offset_,
-      node_ids.size(), bucket_num_, max_length_, d_node_ids, d_elements,
-      d_conflict_count, bucket_size);
-  cudaDeviceSynchronize();
 
   // Build normal hash table
+  cudaMemset(d_conflict_count, 0, sizeof(int));
+  printf("start building normal hash table...\n");
   build_normal_kernel<<<(node_ids.size() + 1024 - 1) / 1024, 1024>>>(
       d_hash_table_normal_, d_hash_length_, d_hash_tables_offset_,
       node_ids.size(), bucket_num_, d_node_ids, d_elements, d_conflict_count,
       bucket_size);
   cudaDeviceSynchronize();
-
   int conflict_count;
   cudaMemcpy(&conflict_count, d_conflict_count, sizeof(int),
              cudaMemcpyDeviceToHost);
-  printf("conflict count: %d\n", conflict_count);
+  printf("Normal hash table built with %d conflicts.\n", conflict_count);
+
+  // Build hierarchical hash table
+  cudaMemset(d_conflict_count, 0, sizeof(int));
+  printf("start building hierarchical hash table...\n");
+  build_hierarchical_kernel<<<(node_ids.size() + 1024 - 1) / 1024, 1024>>>(
+      d_hash_table_hierarchical_, d_hash_length_, d_hash_tables_offset_,
+      node_ids.size(), bucket_num_, max_length_, d_node_ids, d_elements,
+      d_conflict_count, bucket_size);
+  cudaDeviceSynchronize();
+  cudaMemcpy(&conflict_count, d_conflict_count, sizeof(int),
+             cudaMemcpyDeviceToHost);
+  printf("Hierarchical hash table built with %d conflicts.\n", conflict_count);
+
   cudaFree(d_conflict_count);
   cudaFree(d_node_ids);
   cudaFree(d_elements);

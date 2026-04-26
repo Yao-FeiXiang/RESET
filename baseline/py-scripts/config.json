@@ -21,14 +21,14 @@
     },
     "methods": [
         {
-            "method_name": "普通哈希",
-            "output_tag": "普通哈希",
+            "method_name": "Native",
+            "output_tag": "Native",
             "kernel_name": "sss_kernel",
             "is_original": true
         },
         {
-            "method_name": "分层哈希",
-            "output_tag": "分层哈希",
+            "method_name": "RESET",
+            "output_tag": "RESET",
             "kernel_name": "sss_kernel",
             "is_original": true
         },
@@ -39,27 +39,27 @@
             "is_original": false
         },
         {
-            "method_name": "布谷鸟哈希",
-            "output_tag": "布谷鸟哈希",
+            "method_name": "Cuckoo",
+            "output_tag": "Cuckoo",
             "kernel_name": "sss_cuckoo_kernel",
             "is_original": false
         },
         {
-            "method_name": "跳房子哈希",
-            "output_tag": "跳房子哈希",
+            "method_name": "Hopscotch",
+            "output_tag": "Hopscotch",
             "kernel_name": "sss_hopscotch_kernel",
             "is_original": false
         },
         {
-            "method_name": "咆哮位图",
-            "output_tag": "咆哮位图",
+            "method_name": "Roaring",
+            "output_tag": "Roaring",
             "kernel_name": "sss_roaring_kernel",
             "is_original": false
         }
     ],
     "robustness": {
-        "command_timeout_seconds": 60,
-        "max_retries": 3
+        "command_timeout_seconds": 90,
+        "max_retries": 2
     },
     "logging": {
         "log_dir": "./logs"

@@ -150,13 +150,12 @@ __global__ void sss_cuckoo_kernel(
   }
 }
 
-int run_sss_cuckoo(int num_pairs, int num_nodes, int const* d_vertexs,
-                   int const* d_csr_cols_for_edges, int const* d_csr_cols,
-                   int const* d_csr_offsets,
-                   std::vector<int> const& csr_offsets_host,
-                   std::vector<int> const& csr_cols_host, float threshold,
-                   int grid_size, int block_size, int CHUNK_SIZE,
-                   float load_factor, cudaStream_t stream) {
+std::pair<int, float> run_sss_cuckoo(
+    int num_pairs, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_edges, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor, cudaStream_t stream) {
   // 计算每个节点的度数,构建扁平化布谷鸟哈希
   std::vector<int> degrees(num_nodes);
   for (int i = 0; i < num_nodes; ++i) {
@@ -177,7 +176,7 @@ int run_sss_cuckoo(int num_pairs, int num_nodes, int const* d_vertexs,
     printf("错误：构建布谷鸟哈希超时(超过30秒),强制退出\n");
     d_cuckoo->~FlatCuckooHash();
     cudaFree(d_cuckoo);
-    return -1;
+    return {-1, 0.0f};
   }
 
   // 批量插入所有节点的邻接点
@@ -192,7 +191,7 @@ int run_sss_cuckoo(int num_pairs, int num_nodes, int const* d_vertexs,
     printf("错误：构建布谷鸟哈希超时(超过30秒),强制退出\n");
     d_cuckoo->~FlatCuckooHash();
     cudaFree(d_cuckoo);
-    return -1;
+    return {-1, 0.0f};
   }
 
   // 获取设备端指针
@@ -214,10 +213,13 @@ int run_sss_cuckoo(int num_pairs, int num_nodes, int const* d_vertexs,
   cudaMemcpyAsync(d_G_index, &h_G_index, sizeof(int), cudaMemcpyHostToDevice,
                   stream);
 
-  // 创建CUDA事件用于计时和超时检测
+  // 创建CUDA事件用于计时
   cudaEvent_t kernel_start, kernel_stop;
   cudaEventCreate(&kernel_start);
   cudaEventCreate(&kernel_stop);
+
+  // 记录开始事件,然后启动内核
+  cudaEventRecord(kernel_start, stream);
 
   // 启动内核,直接传递扁平化哈希表数据指针、偏移和stash
   sss_cuckoo_kernel<<<grid_size, block_size, 0, stream>>>(
@@ -225,48 +227,12 @@ int run_sss_cuckoo(int num_pairs, int num_nodes, int const* d_vertexs,
       d_csr_cols_for_edges, d_csr_cols, d_csr_offsets, d_results, d_G_index,
       CHUNK_SIZE, threshold);
 
-  // 记录开始事件
-  cudaEventRecord(kernel_start, stream);
-
-  // 等待内核完成,但最多等待30秒
-  cudaEventSynchronize(kernel_start);
-  float kernel_time = 0.0f;
-
-  // 使用循环等待并检查超时
-  bool kernel_completed = false;
-  for (int i = 0; i < 300; ++i) {  // 每100ms检查一次,总共30秒
-    cudaError_t err = cudaEventQuery(kernel_stop);
-    if (err == cudaSuccess) {
-      kernel_completed = true;
-      break;
-    } else if (err == cudaErrorNotReady) {
-      // 仍在运行,等待100ms后继续检查
-      cudaDeviceSynchronize();
-      if ((double)(clock() - start_time) / CLOCKS_PER_SEC > 30.0) {
-        printf("错误：内核执行超时(超过30秒),强制退出\n");
-        break;
-      }
-    } else {
-      // 发生错误
-      printf("CUDA错误：%s\n", cudaGetErrorString(err));
-      break;
-    }
-  }
-
-  if (!kernel_completed) {
-    // 超时,清理资源并返回错误
-    cudaEventDestroy(kernel_start);
-    cudaEventDestroy(kernel_stop);
-    cudaFree(d_results);
-    cudaFree(d_G_index);
-    d_cuckoo->~FlatCuckooHash();
-    cudaFree(d_cuckoo);
-    return -1;
-  }
-
+  // 记录停止事件
   cudaEventRecord(kernel_stop, stream);
   cudaEventSynchronize(kernel_stop);
-  cudaEventElapsedTime(&kernel_time, kernel_start, kernel_stop);
+
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, kernel_start, kernel_stop);
 
   // 读取结果并累加
   std::vector<int> h_results(num_pairs);
@@ -291,5 +257,5 @@ int run_sss_cuckoo(int num_pairs, int num_nodes, int const* d_vertexs,
   d_cuckoo->~FlatCuckooHash();
   cudaFree(d_cuckoo);
 
-  return result_count;
+  return {result_count, kernel_time_ms};
 }

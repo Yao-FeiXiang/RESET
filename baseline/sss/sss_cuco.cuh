@@ -24,12 +24,12 @@
  * @param stream CUDA流
  * @return int 符合条件的结果数量
  */
-int run_sss_cuco(int num_edges, int num_nodes, int const* d_vertexs,
-                 int const* d_csr_cols_for_edges, int const* d_csr_cols,
-                 int const* d_csr_offsets,
-                 std::vector<int> const& csr_offsets_host,
-                 std::vector<int> const& csr_cols_host, float threshold,
-                 int grid_size, int block_size, int CHUNK_SIZE,
-                 float load_factor = 0.25, cudaStream_t stream = 0);
+std::pair<int, float> run_sss_cuco(
+    int num_edges, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_edges, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor = 0.25,
+    cudaStream_t stream = 0);
 
 #endif  // SSS_CUCO_CUH

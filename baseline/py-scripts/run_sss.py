@@ -9,7 +9,6 @@ SSS 实验自动化运行脚本
   - 支持只重跑之前失败的条目，完善已有数据
   - 结果输出为CSV文件,便于后续分析
 
-全部注释使用中文
 """
 
 import json
@@ -107,8 +106,6 @@ def run_sss_timing(
     output_tag = method["output_tag"]
     is_original = method["is_original"]
 
-    print(f"\n  ⚙️  方法: {method_name}")
-
     # 构建命令行参数
     cmd = [str(executable_path), str(dataset_path), f"--alpha={alpha}", f"--bucket={bucket}"]
 
@@ -116,9 +113,9 @@ def run_sss_timing(
     if not is_original:
         method_arg_map = {
             "cuCollections": "cuco",
-            "布谷鸟哈希": "cuckoo",
-            "跳房子哈希": "hopscotch",
-            "咆哮位图": "roaring",
+            "Cuckoo": "cuckoo",
+            "Hopscotch": "hopscotch",
+            "Roaring": "roaring",
         }
         if method_name in method_arg_map:
             cmd.append(f"--method={method_arg_map[method_name]}")
@@ -137,7 +134,17 @@ def run_sss_timing(
     # 解析计时结果
     timing_ms = parse_stdout_timing(stdout, output_tag)
 
-    return {"method_name": method_name, "kernel_time_ms": timing_ms, "timing_success": success}
+    # 计时成功需要同时满足：命令执行成功 AND 成功解析到kernel时间
+    timing_success = timing_ms is not None
+
+    if not timing_success:
+        print(f"  ⚠  命令执行成功但未能解析kernel时间，标记为失败")
+
+    return {
+        "method_name": method_name,
+        "kernel_time_ms": timing_ms,
+        "timing_success": timing_success,
+    }
 
 
 def run_ncu_collection(
@@ -170,8 +177,6 @@ def run_ncu_collection(
     kernel_name = method["kernel_name"]
     is_original = method["is_original"]
 
-    print(f"\n  🔍 NCU采集: {method_name} -> 内核: {kernel_name}")
-
     # 展开NCU临时目录
     ncu_tmp = expand_path(ncu_config["tmp_dir"])
     ncu_tmp.mkdir(parents=True, exist_ok=True)
@@ -195,9 +200,9 @@ def run_ncu_collection(
     if not is_original:
         method_arg_map = {
             "cuCollections": "cuco",
-            "布谷鸟哈希": "cuckoo",
-            "跳房子哈希": "hopscotch",
-            "咆哮位图": "roaring",
+            "Cuckoo": "cuckoo",
+            "Hopscotch": "hopscotch",
+            "Roaring": "roaring",
         }
         if method_name in method_arg_map:
             cmd.append(f"--method={method_arg_map[method_name]}")
@@ -211,11 +216,10 @@ def run_ncu_collection(
     env["TMP"] = str(ncu_tmp)
     env["TEMP"] = str(ncu_tmp)
 
-    # 执行NCU命令（这里需要自定义，因为环境变量要传进去）
-    # 因为我们的run_command_with_retry不支持传env，所以这里重新实现一次带env的
+    # 执行NCU命令（自定义，支持环境变量）
     for attempt in range(max_retries):
         try:
-            print(f"  [{attempt+1}/{max_retries}] 执行NCU命令")
+
             result = subprocess.run(
                 cmd,
                 cwd=executable_path.parent,
@@ -237,35 +241,27 @@ def run_ncu_collection(
             )
 
             if result.returncode == 0:
-                print(f"  ✓ NCU执行成功")
                 metrics = parse_ncu_output(combined, ncu_config["metrics_map"])
                 return {"ncu_status": "OK", "metrics": metrics, "retry_count": attempt}
 
-            print(f"  ✗ NCU执行失败，退出码: {result.returncode}")
-            # 处理锁错误
+            print(f"  ✗ NCU失败,退出码: {result.returncode}")
             if "InterprocessLockFailed" in combined or "nsight-compute-lock" in combined:
-                print("  ℹ 原因: NCU锁冲突，重试会自动解决")
-            # 处理GPU内存不足
+                print("  ℹ NCU锁冲突,重试中...")
             if gpu_out_of_memory:
-                print(f"  📢 检测到GPU内存不足，将等待更长时间后重试让显存释放")
+                print(f"  📢 GPU内存不足,等待释放后重试")
 
             # 保存失败日志
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write(f"CMD: {' '.join(cmd)}\n\n")
-                f.write(f"Attempt {attempt+1}/{max_retries}\n")
+                f.write(f"Attempt {attempt+1}\n")
                 f.write(f"Exit code: {result.returncode}\n\n")
                 f.write("OUTPUT:\n" + combined + "\n")
 
             if attempt < max_retries - 1:
                 # GPU内存错误等待更长时间让显存释放
-                if gpu_out_of_memory:
-                    wait_sec = 60 * (attempt + 1)  # NCU GPU内存错误给1分钟/次
-                else:
-                    wait_sec = 10 * (attempt + 1)
-                print(f"  ⏳ 等待 {wait_sec} 秒后重试...")
-                import time
-
+                wait_sec = 60 * (attempt + 1) if gpu_out_of_memory else 10 * (attempt + 1)
+                print(f"  ⏳ {wait_sec}s后重试...")
                 time.sleep(wait_sec)
 
         except subprocess.TimeoutExpired as e:
@@ -279,18 +275,16 @@ def run_ncu_collection(
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write(f"CMD: {' '.join(cmd)}\n\n")
                 f.write(f"TIMEOUT after {timeout} seconds\n")
-                f.write(f"Attempt {attempt+1}/{max_retries}\n\n")
+                f.write(f"Attempt {attempt+1}\n\n")
                 f.write("OUTPUT (partial):\n" + combined + "\n")
 
             if attempt < max_retries - 1:
                 wait_sec = 15 * (attempt + 1)
-                print(f"  ⏳ 等待 {wait_sec} 秒后重试...")
-                import time
-
+                print(f"  ⏳ 超时,{wait_sec}s后重试...")
                 time.sleep(wait_sec)
 
     # 所有尝试失败
-    print(f"  ✗ 所有 {max_retries} 次NCU尝试都失败了")
+    print(f"  ✗ NCU全部失败")
     return {"ncu_status": "FAILED_ALL", "metrics": {}, "retry_count": max_retries}
 
 
@@ -339,7 +333,7 @@ def load_existing_results(csv_path: Path) -> List[Dict[str, Any]]:
 
 def is_result_failed(result: Dict[str, Any]) -> bool:
     """
-    判断一个结果是否需要重跑：只要timing失败 或者 NCU失败就需要重跑
+    判断一个结果是否需要重跑：只要timing失败、kernel时间为空 或者 NCU失败就需要重跑
     参数:
         result: 结果字典
     返回:
@@ -347,6 +341,9 @@ def is_result_failed(result: Dict[str, Any]) -> bool:
     """
     # 如果计时不成功，需要重跑
     if not result.get('timing_success', False):
+        return True
+    # 如果kernel时间为空，需要重跑
+    if result.get('kernel_time_ms') is None:
         return True
     # 如果NCU状态不是OK，需要重跑
     if result.get('ncu_status', '') != 'OK':
@@ -414,7 +411,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # 1. 加载配置
+    # 加载配置
     config = load_config()
     app_cfg = config["app"]
     exp_cfg = config["experiment"]
@@ -423,23 +420,21 @@ def main():
     robust_cfg = config["robustness"]
     log_cfg = config["logging"]
 
-    # 2. 构建路径(相对于脚本所在的src/scripts目录)
+    # 构建路径
     script_dir = Path(__file__).parent.absolute()
-    src_dir = script_dir.parent  # src目录
-    project_root = src_dir.parent  # 项目根目录
     executable_path = (script_dir.parent / app_cfg["executable"].lstrip('./')).resolve()
     dataset_root = expand_path(str(script_dir / app_cfg["dataset_root"])).resolve()
     output_dir = (script_dir / app_cfg["output_dir"].lstrip('./')).resolve()
     log_dir = (script_dir / log_cfg["log_dir"].lstrip('./')).resolve()
     csv_path = output_dir / f"{app_cfg['name']}_experiment_results.csv"
 
-    # 3. 获取所有数据集
+    # 获取所有数据集
     all_datasets = get_datasets(dataset_root)
     if not all_datasets:
         print("❌ 没有找到任何数据集，退出")
         return
 
-    # 4. 判断运行模式
+    # 判断运行模式
     if args.rerun_failed:
         print("\n🔄 模式：只重跑失败条目")
         print(f"📄 读取已有结果: {csv_path}")
@@ -460,16 +455,16 @@ def main():
         all_results = []
         failed_entries = []
 
-    # 5. 打印实验摘要（根据模式不同）
+    # 打印实验摘要（根据模式不同）
     if not args.rerun_failed:
         print_experiment_summary(config, all_datasets)
 
-    # 6. 确保可执行文件存在
-    if not ensure_executable(executable_path, src_dir):
+    # 确保可执行文件存在
+    if not ensure_executable(executable_path, script_dir.parent):
         print("❌ 无法获取可执行文件，退出")
         return
 
-    # 7. 根据模式选择运行方式
+    # 根据模式选择运行方式
     if args.rerun_failed and failed_entries:
         # 只重跑失败条目
         print(f"\n🚀 开始重跑 {len(failed_entries)} 个失败条目...\n")
@@ -490,7 +485,6 @@ def main():
                 print(f"  ⚠  找不到数据集或方法配置，跳过")
                 continue
 
-            # 计时运行
             timing_result = run_sss_timing(
                 executable_path,
                 dataset_path,
@@ -502,7 +496,6 @@ def main():
                 log_dir,
             )
 
-            # NCU性能采集
             ncu_result = run_ncu_collection(
                 executable_path,
                 dataset_path,
@@ -515,7 +508,6 @@ def main():
                 log_dir,
             )
 
-            # 合并结果，替换原有的失败条目
             result_row = {
                 "app": app_cfg["name"],
                 "dataset": dataset_name,
@@ -526,17 +518,13 @@ def main():
                 "retry_count": ncu_result["retry_count"],
             }
 
-            # 将metrics展开成独立列
             for metric_name, metric_value in ncu_result["metrics"].items():
                 result_row[metric_name] = metric_value
 
-            # 对于没有采集到的metrics，填充为None
             for output_metric in ncu_cfg["metrics_map"].values():
                 if output_metric not in result_row:
                     result_row[output_metric] = None
 
-            # 在all_results中替换原有的条目
-            # 找到原条目索引并替换
             for i, existing in enumerate(all_results):
                 if existing['dataset'] == dataset_name and existing['method_name'] == method_name:
                     all_results[i] = result_row
@@ -551,14 +539,11 @@ def main():
             print(f"  ✔ 完成重跑: 计时={kt}ms, NCU={ncu_result['ncu_status']}")
 
     else:
-        # 全量遍历所有数据集，运行实验
         for idx, dataset_path in enumerate(all_datasets, 1):
             dataset_name = dataset_path.name
             print_dataset_progress(dataset_name, idx, len(all_datasets))
 
-            # 遍历该数据集上的所有方法
             for method in methods:
-                # 6.1 计时运行
                 timing_result = run_sss_timing(
                     executable_path,
                     dataset_path,
@@ -570,7 +555,6 @@ def main():
                     log_dir,
                 )
 
-                # 6.2 NCU性能采集
                 ncu_result = run_ncu_collection(
                     executable_path,
                     dataset_path,
@@ -583,7 +567,6 @@ def main():
                     log_dir,
                 )
 
-                # 6.3 合并结果
                 result_row = {
                     "app": app_cfg["name"],
                     "dataset": dataset_name,
@@ -594,11 +577,9 @@ def main():
                     "retry_count": ncu_result["retry_count"],
                 }
 
-                # 将metrics展开成独立列
                 for metric_name, metric_value in ncu_result["metrics"].items():
                     result_row[metric_name] = metric_value
 
-                # 对于没有采集到的metrics，填充为None
                 for output_metric in ncu_cfg["metrics_map"].values():
                     if output_metric not in result_row:
                         result_row[output_metric] = None
@@ -613,10 +594,10 @@ def main():
                 )
                 print(f"  ✔ 完成: 计时={kt}ms, NCU={ncu_result['ncu_status']}")
 
-    # 8. 保存结果到CSV（无论哪种模式都覆盖保存）
+    # 保存结果到CSV
     save_results_to_csv(all_results, csv_path)
 
-    # 9. 打印最终统计
+    # 打印最终统计
     print_final_summary(all_results)
 
 

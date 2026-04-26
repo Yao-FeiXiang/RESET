@@ -25,6 +25,23 @@ def write_float_bin(filename, val):
         f.write(struct.pack("f", val))
 
 
+def read_arr_bin(filename):
+    with open(filename, "rb") as f:
+        size = struct.unpack("Q", f.read(8))[0]
+        data = struct.unpack(f"{size}i", f.read(4 * size))
+    return list(data)
+
+
+def read_int_bin(filename):
+    with open(filename, "rb") as f:
+        return struct.unpack("i", f.read(4))[0]
+
+
+def read_float_bin(filename):
+    with open(filename, "rb") as f:
+        return struct.unpack("f", f.read(4))[0]
+
+
 def get_hyperparameters(dataset_path: str, mode: str):
     from hyperparamenter_solver import get_hyperparamenters
 
@@ -74,7 +91,9 @@ def _rebuild_index(word_to_id, inverted_index_set, remove_ids):
     new_word_to_id = {}
     new_id = 0
 
-    for w, old_id in word_to_id.items():
+    # 按词的字母顺序遍历，确保ID分配确定性
+    for w in sorted(word_to_id.keys()):
+        old_id = word_to_id[w]
         if old_id not in remove_ids:
             old_to_new[old_id] = new_id
             new_word_to_id[w] = new_id

@@ -195,12 +195,12 @@ FlatCuckooHash::FlatCuckooHash(int num_nodes, const std::vector<int>& degrees,
   // 每个节点预留STASH_SIZE个位置
   total_stash_capacity_ = num_nodes * STASH_SIZE;
   // 计算总blocks: 每个block处理NODES_PER_BLOCK个节点
-  int total_blocks = (num_nodes + NODES_PER_BLOCK - 1) / NODES_PER_BLOCK;
-  printf(
-      "[布谷鸟哈希] 节点数: %d, 总容量: %lld, stash总容量: %lld, "
-      "总blocks: %d, nodes/block: %d, 平均容量/度数: %.2f\n",
-      num_nodes, total_capacity_, total_stash_capacity_, total_blocks,
-      NODES_PER_BLOCK, static_cast<float>(total_capacity_) / degrees.size());
+  // int total_blocks = (num_nodes + NODES_PER_BLOCK - 1) / NODES_PER_BLOCK;
+  // printf(
+  //     "[Cuckoo] 节点数: %d, 总容量: %lld, stash总容量: %lld, "
+  //     "总blocks: %d, nodes/block: %d, 平均容量/度数: %.2f\n",
+  //     num_nodes, total_capacity_, total_stash_capacity_, total_blocks,
+  //     NODES_PER_BLOCK, static_cast<float>(total_capacity_) / degrees.size());
 
   // 分配设备内存
   cudaMalloc(&d_table_, total_capacity_ * sizeof(int));

@@ -30,7 +30,7 @@ logs/
 *_logs/
 *_res.txt
 
-cuCollections/
+baseline/cuCollections/
 
 venv/
 hyperparamenter_solver/figure/

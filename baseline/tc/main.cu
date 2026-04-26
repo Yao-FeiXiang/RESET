@@ -120,7 +120,7 @@ int main(int argc, char* argv[]) {
 
     double cmp_time = (clock() - time_start) / CLOCKS_PER_SEC;
 
-    printf("[普通哈希] 内核执行时间: %.6f 秒\n", cmp_time);
+    printf("[Native] 内核执行时间: %.6f 秒\n", cmp_time);
     printf("三角形数量: %llu\n", result_normal);
 
     // 分层哈希
@@ -133,7 +133,7 @@ int main(int argc, char* argv[]) {
 
     cmp_time = (clock() - time_start) / CLOCKS_PER_SEC;
 
-    printf("[分层哈希] 内核执行时间: %.6f 秒\n", cmp_time);
+    printf("[RESET] 内核执行时间: %.6f 秒\n", cmp_time);
     printf("三角形数量: %llu\n", result_hierarchical);
   }
 

@@ -39,7 +39,6 @@ def run_command_with_retry(
     """
     for attempt in range(max_retries):
         try:
-            print(f"  [{attempt+1}/{max_retries}] 执行命令: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 cwd=cwd,
@@ -61,29 +60,25 @@ def run_command_with_retry(
 
             # 如果命令成功退出,直接返回
             if result.returncode == 0:
-                print(f"  ✓ 尝试成功,退出码: {result.returncode}")
                 return True, result.stdout, result.stderr
 
             # 失败了,打印信息并准备重试
-            print(f"  ✗ 尝试失败,退出码: {result.returncode}")
+            print(f"  ✗ 执行失败,退出码: {result.returncode}")
             if gpu_out_of_memory:
                 print(f"  📢 检测到GPU内存不足,将等待更长时间后重试")
             if log_path is not None:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write(f"CMD: {' '.join(cmd)}\n\n")
-                    f.write(f"Attempt {attempt+1}/{max_retries}\n")
+                    f.write(f"Attempt {attempt+1}\n")
                     f.write(f"Exit code: {result.returncode}\n\n")
                     f.write("OUTPUT:\n" + combined + "\n")
 
             # 如果不是最后一次尝试,等待一会儿重试
             if attempt < max_retries - 1:
                 # GPU内存错误等待更长时间让显存释放
-                if 'gpu_out_of_memory' in locals() and gpu_out_of_memory:
-                    wait_sec = 30 * (attempt + 1)
-                else:
-                    wait_sec = 5 * (attempt + 1)
-                print(f"  ⏳ 等待 {wait_sec} 秒后重试...")
+                wait_sec = 30 * (attempt + 1) if gpu_out_of_memory else 5 * (attempt + 1)
+                print(f"  ⏳ {wait_sec}s后重试...")
                 time.sleep(wait_sec)
 
         except subprocess.TimeoutExpired as e:
@@ -99,12 +94,12 @@ def run_command_with_retry(
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write(f"CMD: {' '.join(cmd)}\n\n")
                     f.write(f"TIMEOUT after {timeout} seconds\n")
-                    f.write(f"Attempt {attempt+1}/{max_retries}\n\n")
+                    f.write(f"Attempt {attempt+1}\n\n")
                     f.write("OUTPUT (partial):\n" + combined + "\n")
 
             if attempt < max_retries - 1:
                 wait_sec = 10 * (attempt + 1)
-                print(f"  ⏳ 等待 {wait_sec} 秒后重试...")
+                print(f"  ⏳ 超时, {wait_sec}s后重试...")
                 time.sleep(wait_sec)
 
         except Exception as e:
@@ -122,7 +117,7 @@ def run_command_with_retry(
                 time.sleep(wait_sec)
 
     # 所有尝试都失败了
-    print(f"  ✗ 所有 {max_retries} 次尝试都失败了")
+    print(f"  ✗ 全部失败")
     return False, "", ""
 
 
@@ -155,12 +150,7 @@ def parse_stdout_timing(stdout: str, output_tag: str) -> Optional[float]:
         print(f"  ⏱  解析得到执行时间: {time_ms:.3f} ms")
         return time_ms
 
-    # Debug: 如果没找到,输出匹配过程帮助诊断
-    print(f"  🐛 调试: 完整输出内容预览(最后20行):")
-    for line in lines[-20:]:
-        print(f"    | {line}")
-
-    print(f"  ✗ 未能找到 {output_tag} 的执行时间")
+    print(f"  ⚠  未能找到 {output_tag} 的执行时间")
     return None
 
 

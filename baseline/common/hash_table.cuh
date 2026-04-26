@@ -38,7 +38,8 @@ class HashTableBuilder {
   // 构建分层哈希和普通哈希两张哈希表
   void build_hash_tables(int num_nodes, const std::vector<int>& h_offsets,
                          const std::vector<int>& h_elements, float load_factor,
-                         int bucket_size);
+                         int bucket_size, const std::vector<int>& vertexs = {},
+                         const std::vector<int>& vertex_csr_cols = {});
 
   // 获取设备端指针的getter方法(供内核使用)
   int* get_d_hash_hierarchical() const { return d_hash_table_hierarchical_; }

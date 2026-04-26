@@ -92,13 +92,12 @@ __global__ void sss_hopscotch_kernel(
   }
 }
 
-int run_sss_hopscotch(int num_pairs, int num_nodes, int const* d_vertexs,
-                      int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
-                      int const* d_csr_offsets,
-                      std::vector<int> const& csr_offsets_host,
-                      std::vector<int> const& csr_cols_host, float threshold,
-                      int grid_size, int block_size, int CHUNK_SIZE,
-                      float load_factor, cudaStream_t stream) {
+std::pair<int, float> run_sss_hopscotch(
+    int num_pairs, int num_nodes, int const* d_vertexs,
+    int const* d_csr_cols_for_vertexs, int const* d_csr_cols,
+    int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
+    std::vector<int> const& csr_cols_host, float threshold, int grid_size,
+    int block_size, int CHUNK_SIZE, float load_factor, cudaStream_t stream) {
   // 预先计算每个节点度数,计算容量分配
   std::vector<int> degrees;
   for (int i = 0; i < num_nodes; i++) {
@@ -112,7 +111,7 @@ int run_sss_hopscotch(int num_pairs, int num_nodes, int const* d_vertexs,
 
   // 批量插入所有节点的邻接点
   int failed = d_hash->bulk_insert(csr_offsets_host, csr_cols_host);
-  printf("[跳房子哈希] 插入失败: %d 个key\n", failed);
+  printf("[Hopscotch] 插入失败: %d 个key\n", failed);
 
   // 分配结果数组
   int* d_results;
@@ -122,10 +121,24 @@ int run_sss_hopscotch(int num_pairs, int num_nodes, int const* d_vertexs,
   cudaMemset(d_G_index, 0, sizeof(int));
   cudaMemset(d_results, 0, num_pairs * sizeof(int));
 
+  // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+
   // 启动查询内核
+  cudaEventRecord(start, stream);
   sss_hopscotch_kernel<<<grid_size, block_size>>>(
       d_hash, num_pairs, d_vertexs, d_csr_cols_for_vertexs, d_csr_cols,
       d_csr_offsets, d_results, d_G_index, CHUNK_SIZE, threshold);
+  cudaEventRecord(stop, stream);
+  cudaEventSynchronize(stop);
+
+  float kernel_time_ms = 0.0f;
+  cudaEventElapsedTime(&kernel_time_ms, start, stop);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
 
   // 读取结果并累加
   std::vector<int> h_results(num_pairs);
@@ -146,7 +159,7 @@ int run_sss_hopscotch(int num_pairs, int num_nodes, int const* d_vertexs,
   cudaFree(d_results);
   cudaFree(d_G_index);
 
-  printf("[跳房子哈希] 节点数: %d, 总容量: %zu\n", num_nodes, total_cap);
+  // printf("[Hopscotch] 节点数: %d, 总容量: %zu\n", num_nodes, total_cap);
 
-  return result_count;
+  return {result_count, kernel_time_ms};
 }

@@ -118,8 +118,8 @@ int main(int argc, char* argv[]) {
         CHUNK_SIZE, grid_size, block_size, bucket_size, false);
     double secs = (clock() - t0) / CLOCKS_PER_SEC;
 
-    printf("[分层哈希] 内核执行时间: %.6f 秒\n", secs);
-    printf("[分层哈希] 信息相似度结果数: %d\n", result_hierarchical);
+    printf("[RESET] 内核执行时间: %.6f 秒\n", secs);
+    printf("[RESET] 信息相似度结果数: %d\n", result_hierarchical);
 
     // 普通哈希
     flush.flush();
@@ -128,8 +128,8 @@ int main(int argc, char* argv[]) {
                                             bucket_size, false);
     secs = (clock() - t0) / CLOCKS_PER_SEC;
 
-    printf("[普通哈希] 内核执行时间: %.6f 秒\n", secs);
-    printf("[普通哈希] 信息相似度结果数: %d\n", result_normal);
+    printf("[Native] 内核执行时间: %.6f 秒\n", secs);
+    printf("[Native] 信息相似度结果数: %d\n", result_normal);
   }
 
   // ==================== CUCO ====================

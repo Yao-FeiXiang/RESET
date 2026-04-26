@@ -22,20 +22,29 @@ class SSSBaseline : public HashTableBuilder {
   // 从文件加载顶点对
   void load_vertex_pairs(const std::string& vertexs_path);
 
-  // 使用分层哈希运行实验
-  int run_hierarchical(CSRGraph& graph, int CHUNK_SIZE, int grid_size,
-                       int block_size, int bucket_size, float threshold,
-                       bool sorted);
+  // 使用分层哈希运行实验,返回(结果数, 内核执行时间ms)
+  std::pair<int, float> run_hierarchical(CSRGraph& graph, int CHUNK_SIZE,
+                                         int grid_size, int block_size,
+                                         int bucket_size, float threshold,
+                                         bool sorted);
 
-  // 使用普通哈希运行实验
-  int run_normal(CSRGraph& graph, int CHUNK_SIZE, int grid_size, int block_size,
-                 int bucket_size, float threshold, bool sorted);
+  // 使用普通哈希运行实验,返回(结果数, 内核执行时间ms)
+  std::pair<int, float> run_normal(CSRGraph& graph, int CHUNK_SIZE,
+                                   int grid_size, int block_size,
+                                   int bucket_size, float threshold,
+                                   bool sorted);
 
   // 获取超过阈值的对数
   int get_result_count();
 
   // 分配结果缓冲区
   void allocate_buffers();
+
+  // 预排序CSR列(用于hierarchical哈希),在计时前完成
+  void pre_sort_csr_cols(CSRGraph& graph);
+
+  // 获取排序后的CSR列指针
+  int* get_sorted_csr_cols() const { return d_csr_cols_sorted_; }
 
   // Getter方法供cuco调用
   int get_num_pairs() const { return num_edges_; }
