@@ -187,8 +187,6 @@ int main(int argc, char *argv[])
     int a_size = std::atoi(argv[1]);
     int b_size = std::atoi(argv[2]);
 
-    // int*a=generate_random_array(a_size, a_size*10);
-    // int *b = generate_random_array(b_size, b_size*10);
 
     int *a = generate_random_array(a_size, INT_MAX);
     int *b = generate_random_array(b_size, INT_MAX);

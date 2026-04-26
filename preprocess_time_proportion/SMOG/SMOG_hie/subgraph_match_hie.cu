@@ -406,61 +406,75 @@ __global__ void DFSKernelForGeneral(int process_id, int process_num, int chunk_s
 }
 
 
+// 与 information-retrieval/ir.cu 中 ir_kernel 类似: G_index 动态分配顶点,
+// CHUNK_SIZE=1; 槽内压缩写回位置用 __ballot_sync + __popc,不用 shuffle 前缀和。
 __global__ void extract_adjcant_from_hashtable_kernel(
     int num_nodes, int *degree_offset, long long *hash_tables_offset,
     int *hash_tables, long long bucket_num, int bucket_size,
-    int *new_adjcant, int *reverse_mapping)
+    int *new_adjcant, int *reverse_mapping, int *G_index)
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int warp_id = tid / 32;
-    int lane_id = tid % 32;
+    const int CHUNK_SIZE = 1;
+    const int WARP = 32;
+    const int warp_id = threadIdx.x / WARP;
+    const int lane_id = threadIdx.x % WARP;
+    const int num_warps = blockDim.x / WARP;
 
-    if (warp_id >= num_nodes)
-        return;
+    int u = (blockIdx.x * num_warps + warp_id) * CHUNK_SIZE;
+    int u_end = u + CHUNK_SIZE;
 
-    int u = warp_id;
-    int offset_start = degree_offset[u];
-    int degree = degree_offset[u + 1] - offset_start;
-    if (degree == 0)
-        return;
-
-    long long ht_offset_ll = hash_tables_offset[u];
-    int length = (int)(hash_tables_offset[u + 1] - hash_tables_offset[u]);
-    int *ht = hash_tables + static_cast<size_t>(ht_offset_ll);
-
-    int write_pos = 0;
-    int total_slots = length * bucket_size;
-    int num_iters = (total_slots + 31) / 32;
-
-    for (int iter = 0; iter < num_iters; iter++)
+    while (u < num_nodes)
     {
-        int i = lane_id + iter * 32;
-        int is_valid = 0;
-        int val = -1;
-        if (i < total_slots)
+        int offset_start = degree_offset[u];
+        int degree = degree_offset[u + 1] - offset_start;
+
+        if (degree > 0)
         {
-            int b = i / bucket_size;
-            int s = i % bucket_size;
-            val = ht[b + s * bucket_num];
-            if (val != -1)
-                is_valid = 1;
-        }
+            long long ht_offset_ll = hash_tables_offset[u];
+            int length = (int)(hash_tables_offset[u + 1] - hash_tables_offset[u]);
+            int *ht = hash_tables + static_cast<size_t>(ht_offset_ll);
 
-        unsigned int mask = 0xffffffffu;
-        int sum = is_valid;
-        for (int offset = 1; offset < 32; offset *= 2)
+            int total_slots = length * bucket_size;
+            int result_num = 0;
+            int num_iters = (total_slots + WARP - 1) / WARP;
+
+            for (int iter = 0; iter < num_iters; iter++)
+            {
+                int i = lane_id + iter * WARP;
+                bool active = (i < total_slots);
+                int val = -1;
+                bool is_valid = false;
+                if (active)
+                {
+                    int b = i / bucket_size;
+                    int s = i % bucket_size;
+                    val = ht[b + s * bucket_num];
+                    if (val != -1)
+                        is_valid = true;
+                }
+
+                unsigned int valid_mask = __ballot_sync(FULL_MASK, is_valid);
+                int step_valid = __popc(valid_mask);
+                int write_pos =
+                    result_num + __popc(valid_mask & ((1u << lane_id) - 1u));
+                if (is_valid && active)
+                {
+                    new_adjcant[offset_start + write_pos] = reverse_mapping[val];
+                }
+                result_num += step_valid;
+            }
+        }
+        __syncwarp();
+
+        u++;
+        if (u == u_end)
         {
-            int n = __shfl_up_sync(mask, sum, offset);
-            if (lane_id >= offset)
-                sum += n;
+            if (lane_id == 0)
+            {
+                u = atomicAdd(G_index, CHUNK_SIZE);
+            }
+            u = __shfl_sync(FULL_MASK, u, 0);
+            u_end = u + CHUNK_SIZE;
         }
-        int local_offset = sum - is_valid;
-        int total_valid = __shfl_sync(mask, sum, 31);
-
-        if (is_valid)
-            new_adjcant[offset_start + write_pos + local_offset] = reverse_mapping[val];
-
-        write_pos += total_valid;
     }
 }
 
@@ -469,12 +483,23 @@ static void gpu_extract_adjcant_from_hashtable(
     int *d_hash_tables, long long bucket_num, int bucket_size,
     int *d_adjcant_hierarchical, int *d_reverse_mapping)
 {
-    int warp_count = node_num;
+    const int CHUNK_SIZE = 1;
     const int extract_block = 128;
-    int extract_grid = (warp_count * 32 + extract_block - 1) / extract_block;
+    const int num_warps_per_block = extract_block / 32;
+    int extract_grid = (node_num * 32 + extract_block - 1) / extract_block;
+
+    int *d_g_index = nullptr;
+    HRR(cudaMalloc(&d_g_index, sizeof(int)));
+    int h_init = extract_grid * num_warps_per_block * CHUNK_SIZE;
+    HRR(cudaMemcpy(d_g_index, &h_init, sizeof(int), cudaMemcpyHostToDevice));
+
     extract_adjcant_from_hashtable_kernel<<<extract_grid, extract_block>>>(
         node_num, d_degree_offset, d_hash_tables_offset, d_hash_tables,
-        bucket_num, bucket_size, d_adjcant_hierarchical, d_reverse_mapping);
+        bucket_num, bucket_size, d_adjcant_hierarchical, d_reverse_mapping,
+        d_g_index);
+
+    HRR(cudaDeviceSynchronize());
+    HRR(cudaFree(d_g_index));
     HRR(cudaGetLastError());
 }
 

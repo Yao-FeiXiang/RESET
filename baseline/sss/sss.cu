@@ -1,8 +1,4 @@
 #include <cooperative_groups.h>
-#include <thrust/device_vector.h>
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/sort.h>
-#include <thrust/tuple.h>
 
 #include "sss.cuh"
 
@@ -106,43 +102,92 @@ __global__ void sss_kernel(int num_edges, int* vertexs, int* csr_cols,
   }
 }
 
-// 元组比较器,用于对CSR列按行号和桶位置排序
-// 按行号升序,相同行内按元素模max_length升序
-struct TupleComparator {
-  int max_length;
-  __host__ __device__ TupleComparator(int ml = 8) : max_length(ml) {}
-  __host__ __device__ bool operator()(const thrust::tuple<int, int>& a,
-                                      const thrust::tuple<int, int>& b) const {
-    int ra = thrust::get<0>(a);
-    int rb = thrust::get<0>(b);
-    if (ra != rb) return ra < rb;
-    int ca = thrust::get<1>(a);
-    int cb = thrust::get<1>(b);
-    return (ca & (max_length - 1)) < (cb & (max_length - 1));
+
+__global__ void extract_csr_cols_from_hashtable_kernel(
+    int num_nodes, int* csr_offsets, long long* hash_tables_offset,
+    int* hash_tables, long long bucket_num, int bucket_size,
+    int* new_csr_cols, int* G_index) {
+  const int CHUNK_SIZE = 1;
+  const int warp_id = threadIdx.x / warpSize;
+  const int lane_id = threadIdx.x % warpSize;
+  const int num_warps = blockDim.x / warpSize;
+
+  int u = (blockIdx.x * num_warps + warp_id) * CHUNK_SIZE;
+  int u_end = u + CHUNK_SIZE;
+
+  while (u < num_nodes) {
+    int offset_start = csr_offsets[u];
+    int degree = csr_offsets[u + 1] - offset_start;
+
+    if (degree > 0) {
+      long long ht_offset_ll = hash_tables_offset[u];
+      int length = static_cast<int>(hash_tables_offset[u + 1] -
+                                      hash_tables_offset[u]);
+      int* ht = hash_tables + static_cast<size_t>(ht_offset_ll);
+
+      int total_slots = length * bucket_size;
+      int result_num = 0;
+      int num_iters = (total_slots + warpSize - 1) / warpSize;
+
+      for (int iter = 0; iter < num_iters; iter++) {
+        int i = lane_id + iter * warpSize;
+        bool active = (i < total_slots);
+        int val = -1;
+        bool is_valid = false;
+        if (active) {
+          int b = i / bucket_size;
+          int s = i % bucket_size;
+          val = ht[b + s * bucket_num];
+          if (val != -1) is_valid = true;
+        }
+
+        unsigned int valid_mask = __ballot_sync(0xffffffffu, is_valid);
+        int step_valid = __popc(valid_mask);
+        int write_pos =
+            result_num + __popc(valid_mask & ((1u << lane_id) - 1u));
+        if (is_valid && active) {
+          new_csr_cols[offset_start + write_pos] = val;
+        }
+        result_num += step_valid;
+      }
+    }
+    __syncwarp();
+
+    u++;
+    if (u == u_end) {
+      if (lane_id == 0) {
+        u = atomicAdd(G_index, CHUNK_SIZE);
+      }
+      u = __shfl_sync(0xffffffffu, u, 0);
+      u_end = u + CHUNK_SIZE;
+    }
   }
-};
+}
 
-// GPU排序CSR列,按行和桶位置重排元素,提高局部性
-void gpu_sort_csr_cols(std::vector<int>& csr_cols,
-                       const std::vector<int>& csr_row, int num_nodes,
-                       int max_length) {
-  int total_edges = csr_cols.size();
-  std::vector<int> rows_host(total_edges);
-  for (int i = 0; i < num_nodes; ++i) {
-    int start = csr_row[i];
-    int end = csr_row[i + 1];
-    for (int p = start; p < end; ++p) rows_host[p] = i;
-  }
+static void gpu_extract_csr_cols_from_hashtable(
+    int num_nodes, int* d_csr_offsets, long long* d_hash_tables_offset,
+    int* d_hash_tables, long long bucket_num, int bucket_size,
+    int* d_new_csr_cols) {
+  const int CHUNK_SIZE = 1;
+  const int extract_block = 128;
+  const int num_warps_per_block = extract_block / warpSize;
+  int extract_grid =
+      (num_nodes * warpSize + extract_block - 1) / extract_block;
 
-  thrust::device_vector<int> d_csr_cols = csr_cols;
-  thrust::device_vector<int> d_rows = rows_host;
+  int* d_g_index = nullptr;
+  cudaMalloc(&d_g_index, sizeof(int));
+  CHECK_CUDA_ERROR();
+  int h_init = extract_grid * num_warps_per_block * CHUNK_SIZE;
+  cudaMemcpy(d_g_index, &h_init, sizeof(int), cudaMemcpyHostToDevice);
+  CHECK_CUDA_ERROR();
 
-  auto first = thrust::make_zip_iterator(
-      thrust::make_tuple(d_rows.begin(), d_csr_cols.begin()));
-  auto last = thrust::make_zip_iterator(
-      thrust::make_tuple(d_rows.end(), d_csr_cols.end()));
-  thrust::sort(first, last, TupleComparator(max_length));
-  thrust::copy(d_csr_cols.begin(), d_csr_cols.end(), csr_cols.begin());
+  extract_csr_cols_from_hashtable_kernel<<<extract_grid, extract_block>>>(
+      num_nodes, d_csr_offsets, d_hash_tables_offset, d_hash_tables,
+      bucket_num, bucket_size, d_new_csr_cols, d_g_index);
+  CHECK_CUDA_ERROR();
+
+  cudaDeviceSynchronize();
+  cudaFree(d_g_index);
 }
 
 SSSBaseline::~SSSBaseline() {
@@ -168,14 +213,19 @@ void SSSBaseline::allocate_buffers() {
   cudaMemset(d_results_, 0, num_edges_ * sizeof(int));
 }
 
-// 预排序CSR列(用于hierarchical哈希),在计时前完成
-void SSSBaseline::pre_sort_csr_cols(CSRGraph& graph) {
-  std::vector<int> sorted_cols = graph.get_host_elements();
-  gpu_sort_csr_cols(sorted_cols, graph.get_host_offsets(),
-                    graph.get_num_nodes(), get_max_length());
-  cudaMalloc(&d_csr_cols_sorted_, sorted_cols.size() * sizeof(int));
-  cudaMemcpy(d_csr_cols_sorted_, sorted_cols.data(),
-             sorted_cols.size() * sizeof(int), cudaMemcpyHostToDevice);
+// 按分层哈希表布局重排 CSR 列(用于 hierarchical 路径),在计时前完成
+void SSSBaseline::pre_sort_csr_cols(CSRGraph& graph, int bucket_size) {
+  const int num_nodes = graph.get_num_nodes();
+  const int total_edges = graph.get_num_elements();
+
+  if (d_csr_cols_sorted_) cudaFree(d_csr_cols_sorted_);
+  cudaMalloc(&d_csr_cols_sorted_, sizeof(int) * total_edges);
+
+  gpu_extract_csr_cols_from_hashtable(
+      num_nodes, graph.get_device_offsets(), get_d_hash_tables_offset(),
+      get_d_hash_hierarchical(), get_bucket_num(), bucket_size,
+      d_csr_cols_sorted_);
+  cudaDeviceSynchronize();
 }
 
 std::pair<int, float> SSSBaseline::run_hierarchical(

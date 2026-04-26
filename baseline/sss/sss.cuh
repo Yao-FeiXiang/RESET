@@ -40,8 +40,8 @@ class SSSBaseline : public HashTableBuilder {
   // 分配结果缓冲区
   void allocate_buffers();
 
-  // 预排序CSR列(用于hierarchical哈希),在计时前完成
-  void pre_sort_csr_cols(CSRGraph& graph);
+  // 按分层哈希表存储顺序重排 CSR 列(替代 thrust 排序),在计时前完成
+  void pre_sort_csr_cols(CSRGraph& graph, int bucket_size);
 
   // 获取排序后的CSR列指针
   int* get_sorted_csr_cols() const { return d_csr_cols_sorted_; }
@@ -76,10 +76,5 @@ __device__ __forceinline__ bool search_in_hashtable(int key, int* hashtable,
                                                     int bucket_num, int bucket,
                                                     int hash_length,
                                                     int bucket_size);
-
-// 按哈希值排序CSR列,提高局部性
-void gpu_sort_csr_cols(std::vector<int>& csr_cols,
-                       const std::vector<int>& csr_row, int num_nodes,
-                       int max_length);
 
 #endif  // SSS_CUH

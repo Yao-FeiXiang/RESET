@@ -128,7 +128,7 @@ int main(int argc, char* argv[]) {
 
   // 预排序CSR列(用于hierarchical哈希),在计时前完成(与set-similarity-search一致)
   if (run_original) {
-    baseline.pre_sort_csr_cols(graph);
+    baseline.pre_sort_csr_cols(graph, bucket_size);
   }
 
   // 清空L2缓存(保证公平)

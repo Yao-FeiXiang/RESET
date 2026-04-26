@@ -37,6 +37,9 @@ hyperparamenter_solver/figure/
 hyperparamenter_solver/res/
 baseline/figure
 
+# SMOG preprocess benchmarks: local graph inputs (large MMIO)
+preprocess_time_proportion/SMOG/data/
+
 *.txt
 output/
 docs/
