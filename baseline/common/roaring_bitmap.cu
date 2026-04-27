@@ -2,20 +2,6 @@
  * @file roaring_bitmap.cu
  * @brief 轻量级Roaring位图 - 针对SSS低度数图优化
  *
- * SSS任务特点：平均度数极低(~3.89)，每个节点只有几个邻居
- * 优化设计：
- * 1. ID重映射：将原始ID映射到[0, M-1]，减少位表示范围
- * 2. 稀疏存储：每个节点只存储实际有邻居的word
- *    - 对于度数<64的节点，只需要1个word(8字节)
- * 3. 查询：O(log W)二分查找，W通常=1
- *
- * 存储格式（扁平化）：
- *   node_start[node_id] = 该节点在word_info中的起始偏移
- *   word_info[offset + i] = (word_index << 32) | word_data
- *     - word_index: 哪个word有邻居
- *     - word_data: 64位位图
- *
- * 总内存预估：240万节点，每个节点1个word → ~20MB！
  */
 
 #include <thrust/device_vector.h>
@@ -91,21 +77,21 @@ __host__ RoaringBitmap::RoaringBitmap(int num_nodes,
   const double avg_words_per_node =
       static_cast<double>(total_words_) / num_nodes;
 
-  printf(
-      "[Roaring] 节点数: %d, 总word数: %zu, 平均每节点word数: %.3f\n"
-      "[Roaring] 总内存: %.2f MB (node_start: %.2f MB, word_index: %.2f MB, "
-      "word_data: %.2f MB, remap: %.2f MB)\n",
-      num_nodes, total_words_, avg_words_per_node,
-      static_cast<double>((num_nodes + 1) * sizeof(int) +
-                          total_words_ * sizeof(int) +
-                          total_words_ * sizeof(uint64_t) +
-                          host_id_remap_.size() * sizeof(int)) /
-          (1024.0 * 1024.0),
-      static_cast<double>((num_nodes + 1) * sizeof(int)) / (1024.0 * 1024.0),
-      static_cast<double>(total_words_ * sizeof(int)) / (1024.0 * 1024.0),
-      static_cast<double>(total_words_ * sizeof(uint64_t)) / (1024.0 * 1024.0),
-      static_cast<double>(host_id_remap_.size() * sizeof(int)) /
-          (1024.0 * 1024.0));
+  // printf(
+  //     "[Roaring] 节点数: %d, 总word数: %zu, 平均每节点word数: %.3f\n"
+  //     "[Roaring] 总内存: %.2f MB (node_start: %.2f MB, word_index: %.2f MB, "
+  //     "word_data: %.2f MB, remap: %.2f MB)\n",
+  //     num_nodes, total_words_, avg_words_per_node,
+  //     static_cast<double>((num_nodes + 1) * sizeof(int) +
+  //                         total_words_ * sizeof(int) +
+  //                         total_words_ * sizeof(uint64_t) +
+  //                         host_id_remap_.size() * sizeof(int)) /
+  //         (1024.0 * 1024.0),
+  //     static_cast<double>((num_nodes + 1) * sizeof(int)) / (1024.0 * 1024.0),
+  //     static_cast<double>(total_words_ * sizeof(int)) / (1024.0 * 1024.0),
+  //     static_cast<double>(total_words_ * sizeof(uint64_t)) / (1024.0 *
+  //     1024.0), static_cast<double>(host_id_remap_.size() * sizeof(int)) /
+  //         (1024.0 * 1024.0));
 
   // ========== 第三步：分配并复制到设备 ==========
   cudaError_t err;

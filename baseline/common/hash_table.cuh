@@ -41,6 +41,36 @@ class HashTableBuilder {
                          int bucket_size, const std::vector<int>& vertexs = {},
                          const std::vector<int>& vertex_csr_cols = {});
 
+  // 释放哈希表内存（用于运行cuco之前释放不需要的内存）
+  void free_hash_tables() {
+    if (d_hash_table_hierarchical_) {
+      cudaFree(d_hash_table_hierarchical_);
+      d_hash_table_hierarchical_ = nullptr;
+    }
+    if (d_hash_table_normal_) {
+      cudaFree(d_hash_table_normal_);
+      d_hash_table_normal_ = nullptr;
+    }
+    if (d_hash_length_) {
+      cudaFree(d_hash_length_);
+      d_hash_length_ = nullptr;
+    }
+    if (d_hash_tables_offset_) {
+      cudaFree(d_hash_tables_offset_);
+      d_hash_tables_offset_ = nullptr;
+    }
+    if (hash_table_hierarchical_) {
+      delete[] hash_table_hierarchical_;
+      hash_table_hierarchical_ = nullptr;
+    }
+    if (hash_table_normal_) {
+      delete[] hash_table_normal_;
+      hash_table_normal_ = nullptr;
+    }
+    // printf("已释放哈希表内存，节省约 %.2f GB\n",
+    //        (bucket_num_ * 5 * 4 * 2.0) / (1024 * 1024 * 1024));
+  }
+
   // 获取设备端指针的getter方法(供内核使用)
   int* get_d_hash_hierarchical() const { return d_hash_table_hierarchical_; }
   int* get_d_hash_normal() const { return d_hash_table_normal_; }

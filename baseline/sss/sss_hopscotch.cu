@@ -20,9 +20,11 @@
  * @brief SSS扁平化跳房子哈希查询内核
  * 每个warp处理一个查询对,动态负载均衡
  * 使用每个节点独立哈希表查询
+ * ✅ 直接传递设备指针，避免类成员访问的一致性问题
  */
 __global__ void sss_hopscotch_kernel(
-    HopscotchHash* hash, int num_pairs, int const* __restrict__ d_vertexs,
+    int* d_offset, int* d_table, int* d_bitmap, int num_pairs,
+    int const* __restrict__ d_vertexs,
     int const* __restrict__ d_csr_cols_for_edges,
     int const* __restrict__ d_csr_cols, int const* __restrict__ d_csr_offsets,
     int* __restrict__ d_results, int* __restrict__ d_G_index, int CHUNK_SIZE,
@@ -63,7 +65,24 @@ __global__ void sss_hopscotch_kernel(
       if (active) {
         int neighbor = d_csr_cols[u_neighbour_start + j];
         // 在v节点的哈希表中查找邻接点是否存在
-        found = hash->contains(v, neighbor);
+        int node_start = d_offset[v];
+        int total_with_h = d_offset[v + 1] - node_start;
+        int capacity = total_with_h - 32;  // H=32
+        int home = standard_hash(neighbor, v, capacity);
+
+        uint32_t bm = d_bitmap[node_start + home];
+
+        while (bm != 0) {
+          int i = __ffs(bm) - 1;
+          bm ^= (1U << i);
+          if (home + i < total_with_h) {
+            int pos = node_start + home + i;
+            if (d_table[pos] == neighbor) {
+              found = true;
+              break;
+            }
+          }
+        }
       }
 
       unsigned int found_mask = __ballot_sync(0xffffffff, found);
@@ -113,6 +132,11 @@ std::pair<int, float> run_sss_hopscotch(
   int failed = d_hash->bulk_insert(csr_offsets_host, csr_cols_host);
   printf("[Hopscotch] 插入失败: %d 个key\n", failed);
 
+  // 获取设备端指针
+  int* d_offset = d_hash->get_device_offset();
+  int* d_table = d_hash->get_device_table();
+  int* d_bitmap = d_hash->get_device_bitmap();
+
   // 分配结果数组
   int* d_results;
   int* d_G_index;
@@ -129,8 +153,8 @@ std::pair<int, float> run_sss_hopscotch(
   // 启动查询内核
   cudaEventRecord(start, stream);
   sss_hopscotch_kernel<<<grid_size, block_size>>>(
-      d_hash, num_pairs, d_vertexs, d_csr_cols_for_vertexs, d_csr_cols,
-      d_csr_offsets, d_results, d_G_index, CHUNK_SIZE, threshold);
+      d_offset, d_table, d_bitmap, num_pairs, d_vertexs, d_csr_cols_for_vertexs,
+      d_csr_cols, d_csr_offsets, d_results, d_G_index, CHUNK_SIZE, threshold);
   cudaEventRecord(stop, stream);
   cudaEventSynchronize(stop);
 

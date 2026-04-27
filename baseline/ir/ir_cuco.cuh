@@ -35,6 +35,6 @@ std::pair<int, float> run_ir_cuco(
     long long const* d_result_offsets, int* d_result_count, int* d_G_index,
     int CHUNK_SIZE, std::vector<int> const& inverted_index_offsets_host,
     std::vector<int> const& inverted_index_host, int grid_size, int block_size,
-    float load_factor = 0.25, cudaStream_t stream = 0);
+    float load_factor = 0.2, cudaStream_t stream = 0);
 
 #endif  // IR_CUCO_CUH

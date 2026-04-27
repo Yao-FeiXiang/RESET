@@ -105,14 +105,13 @@ __global__ void set_similarity_search_kernel(
     int v = csr_cols[edge];
     int u_size = csr_offsets[u + 1] - csr_offsets[u];
     int v_size = csr_offsets[v + 1] - csr_offsets[v];
-    if(u_size>v_size)
-    {
-        int temp = u;
-        u = v;
-        v = temp;
-        int temp_size = u_size;
-        u_size = v_size;
-        v_size = temp_size;
+    if (u_size > v_size) {
+      int temp = u;
+      u = v;
+      v = temp;
+      int temp_size = u_size;
+      u_size = v_size;
+      v_size = temp_size;
     }
     int* hash_table_start = &hash_table[hash_table_offsets[v]];
     int length = hash_length[v];
@@ -128,7 +127,8 @@ __global__ void set_similarity_search_kernel(
         int key = csr_cols[u_neightbour_start + j];
         int bucket = (opt) ? d_hash_hierarchical(key, length, max_length)
                            : d_hash_normal(key, length);
-        found = search_in_hashtable(key, hash_table_start, bucket_num, bucket,length, bucket_size);
+        found = search_in_hashtable(key, hash_table_start, bucket_num, bucket,
+                                    length, bucket_size);
       }
       unsigned int found_mask = __ballot_sync(0xffffffff, found);
       int step_found = __popc(found_mask);
@@ -194,8 +194,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   string input_folder = argv[1];
-  float load_factor = 0.25;
-  int bucket_size = 4;
+  float load_factor = 0.2;
+  int bucket_size = 5;
 
   for (int i = 2; i < argc; i++) {
     std::string arg = argv[i];
@@ -245,15 +245,12 @@ int main(int argc, char* argv[]) {
 
   printf("num_nodes: %d, num_edges: %d\n", num_nodes, num_edges);
 
-
-  int max_degree=0;
-  for(int i=0;i<num_nodes;i++)
-  {
-      int degree = csr_offsets[i+1]-csr_offsets[i];
-      if(degree>max_degree)
-          max_degree=degree;
+  int max_degree = 0;
+  for (int i = 0; i < num_nodes; i++) {
+    int degree = csr_offsets[i + 1] - csr_offsets[i];
+    if (degree > max_degree) max_degree = degree;
   }
-  printf("max_degree: %d\n",max_degree);
+  printf("max_degree: %d\n", max_degree);
 
   make_hash_table(load_factor, bucket_size);
 

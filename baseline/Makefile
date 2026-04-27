@@ -1,5 +1,5 @@
-GRAPH_DATASET_NAME = wt #sc18,sc19,sc20,bm,gp,wt
-IR_DATASET_NAME = fe #cqadupstack,fever,hotpotqa,lt,msmarco,nq
+GRAPH_DATASET_NAME = bm #sc18,sc19,sc20,bm,gp,wt
+IR_DATASET_NAME = ms #ce,fe,hp,lt,ms,nq
 
 # Parallel compilation: use make -jN or set MAKEFLAGS
 MAKEFLAGS += -j$(shell nproc)
@@ -31,7 +31,8 @@ NVCC_FLAGS = -O3 -std=c++17 -arch=sm_80 $(if $(filter 1,$(LINEINFO)),-lineinfo) 
 # Common objects
 COMMON_DIR = common
 COMMON_OBJS = $(COMMON_DIR)/utils.o $(COMMON_DIR)/hash_table.o $(COMMON_DIR)/graph_data.o \
-              $(COMMON_DIR)/cuckoo_hash.o $(COMMON_DIR)/hopscotch_hash.o $(COMMON_DIR)/roaring_bitmap.o
+              $(COMMON_DIR)/cuckoo_hash.o $(COMMON_DIR)/hopscotch_hash.o $(COMMON_DIR)/roaring_bitmap.o \
+              $(COMMON_DIR)/cuco.o
 
 # Experiments
 EXPERIMENTS = ir sss tc
@@ -67,13 +68,13 @@ tc: $(COMMON_OBJS) $(tc_OBJS)
 	@echo "✓ tc build successful"
 
 test-ir: ir
-	./ir/ir ../ir_datasets/$(IR_DATASET_NAME)
+	./ir/ir ../ir_datasets/$(IR_DATASET_NAME) --method=original,cuco
 
 test-sss: sss
-	./sss/sss ../graph_datasets/$(GRAPH_DATASET_NAME)
+	./sss/sss ../graph_datasets/$(GRAPH_DATASET_NAME) --method=original,cuco
 
 test-tc: tc
-	./tc/tc ../graph_datasets/$(GRAPH_DATASET_NAME)
+	./tc/tc ../graph_datasets/$(GRAPH_DATASET_NAME) --method=original,cuco
 
 test-sss-all:
 	./sss/sss ../graph_datasets/$(GRAPH_DATASET_NAME) --method=all

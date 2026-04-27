@@ -42,6 +42,9 @@ class TCBaseline : public HashTableBuilder {
   // 分配结果缓冲区
   void allocate_buffers();
 
+  // 按分层哈希表布局重排CSR列数据（计时外预处理）
+  void reorder_csr_by_hash_layout(CSRGraph& graph, int slots_per_bucket);
+
   // Getter方法供cuco调用
   int* get_d_vertex_list() const { return d_vertexs_; }
 
@@ -68,10 +71,5 @@ __device__ __forceinline__ bool search_in_hashtable(int key, int* hashtable,
                                                     int bucket_num, int bucket,
                                                     int hash_length,
                                                     int bucket_size);
-
-// 按哈希值排序CSR列,提高局部性
-void gpu_sort_csr_cols(std::vector<int>& csr_cols,
-                       const std::vector<int>& csr_row, int num_nodes,
-                       int max_length);
 
 #endif  // TC_CUH

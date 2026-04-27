@@ -86,51 +86,24 @@ class FlatCuckooHash {
    */
   __device__ __forceinline__ bool contains(int node_id, int key, int* table,
                                            long long* offsets,
-                                           int* stash_starts,
+                                           long long* stash_starts,
                                            int* stash_data) const {
     long long start = offsets[node_id];
     int capacity = static_cast<int>(offsets[node_id + 1] - start);
 
-    // 三个完全独立的哈希,和插入完全一致
-    // 布谷鸟不变性：key一定在这三个位置之一或者在stash中
-    uint64_t node_salt = (uint64_t)node_id * 1111111111ULL;
-    uint64_t k1 = (uint64_t)key ^ node_salt;
-    uint64_t k2 = (uint64_t)key + node_salt;
-    uint64_t k3 = (uint64_t)key * (node_salt | 0x12345678ULL);
+    // ✅ 使用与插入完全一致的标准哈希函数
+    int h1 = standard_hash(key, node_id, capacity);
+    int h2 = standard_hash2(key, node_id, capacity);
 
-    // 哈希1 - 和插入完全一致
-    k1 ^= k1 >> 33;
-    k1 *= 0xff51afd7ed558ccdULL;
-    k1 ^= k1 >> 33;
-    k1 *= 0xc4ceb9fe1a85ec53ULL;
-    k1 ^= k1 >> 33;
-    long long pos1 = start + ((long long)k1 & (capacity - 1));
+    long long pos1 = start + h1;
+    long long pos2 = start + h2;
 
     if (table[pos1] == key) return true;
-
-    // 哈希2 - 和插入完全一致
-    k2 ^= k2 >> 33;
-    k2 *= 0xd6e8feb86b5680bfULL;
-    k2 ^= k2 >> 33;
-    k2 *= 0xcaaf0aaf9603b2e5ULL;
-    k2 ^= k2 >> 33;
-    long long pos2 = start + ((long long)k2 & (capacity - 1));
-
     if (table[pos2] == key) return true;
 
-    // 哈希3 - 和插入完全一致
-    k3 ^= k3 >> 33;
-    k3 *= 0xaed549a354e3eb1bULL;
-    k3 ^= k3 >> 33;
-    k3 *= 0x8058d66927ac9adfULL;
-    k3 ^= k3 >> 33;
-    long long pos3 = start + ((long long)k3 & (capacity - 1));
-
-    if (table[pos3] == key) return true;
-
     // 主表没找到,检查stash
-    long long stash_start = stash_starts[node_id];
-    int stash_count = static_cast<int>(stash_starts[node_id + 1]);
+    long long stash_start = node_id * STASH_SIZE;
+    int stash_count = static_cast<int>(stash_starts[node_id]);
     for (int i = 0; i < stash_count; i++) {
       if (stash_data[stash_start + i] == key) {
         return true;

@@ -5,9 +5,11 @@
 #include <cuda_runtime.h>
 
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
+#define DEV 1
 // CUDA错误检查宏
 #define CHECK_CUDA_ERROR()                                             \
   do {                                                                 \
@@ -49,6 +51,22 @@ __device__ __forceinline__ int d_hash_hierarchical(const int x, int length,
   return (x & (max_length - 1)) >> shift;
 }
 
+/**
+ * @brief 标准哈希函数
+ */
+__device__ __forceinline__ int standard_hash(int key, int node_id,
+                                             int capacity) {
+  return (key ^ (key >> 8) ^ node_id) & (capacity - 1);
+}
+
+/**
+ * @brief 标准哈希函数2
+ */
+__device__ __forceinline__ int standard_hash2(int key, int node_id,
+                                              int capacity) {
+  return (key ^ (key >> 16) ^ (node_id << 1) ^ 0xAAAAAAAA) & (capacity - 1);
+}
+
 // 主机端哈希函数
 __host__ int h_hash_normal(int x, int length);
 __host__ int h_hash_hierarchical(int x, int length, int max_length);
@@ -76,9 +94,20 @@ void read_i32_vec(const std::string& path, std::vector<int>& vec);
 int* read_int_binary(const std::string& path);
 
 // 检查当前GPU剩余内存是否至少需要min_required_mib MiB
-// 通过调用nvidia-smi获取剩余显存信息
-// 如果不足,打印错误信息并退出程序
-void check_gpu_memory(int min_required_mib = 20000);
+void check_gpu_memory(int min_required_mib = 1000);
+
+// 解析逗号分隔的方法列表
+inline std::vector<std::string> parse_methods(const std::string& arg) {
+  std::vector<std::string> methods;
+  std::stringstream ss(arg);
+  std::string method;
+  while (std::getline(ss, method, ',')) {
+    if (!method.empty()) {
+      methods.push_back(method);
+    }
+  }
+  return methods;
+}
 
 /**
  * @brief 编码(term, doc)对为64位键 (用于IR)
@@ -104,5 +133,30 @@ __host__ __device__ __forceinline__ std::uint64_t encode_edge_key(int u,
   return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(u)) << 32) |
          static_cast<std::uint32_t>(v);
 }
+
+/**
+ * @brief CUDA内核：从分层哈希表中提取有效元素，按哈希顺序重建CSR列
+ *
+ * 利用哈希表构建时的分层布局，直接提取每个节点的有效邻居（跳过-1空槽），
+ * 按哈希桶顺序排列，实现"预排序"效果。每个Warp处理一个节点，通过
+ * warp原语高效协作，无需真正排序即可获得局部性优化。
+ */
+__global__ void extract_hashtable_to_csr_kernel(
+    int num_nodes, int* csr_offsets, long long* hashtable_offsets,
+    int* hashtable_data, long long total_buckets, int slots_per_bucket,
+    int* output_csr_cols, int* work_index);
+
+/**
+ * @brief 主机端包装：启动内核，从分层哈希表提取CSR列
+ *
+ * 利用哈希表构建时的已有布局，提取有效元素并按哈希顺序排列，
+ * 这比通用thrust排序更快且无需数据传输。
+ */
+void launch_extract_hashtable_to_csr(int num_nodes, int* d_csr_offsets,
+                                     long long* d_hashtable_offsets,
+                                     int* d_hashtable_data,
+                                     long long total_buckets,
+                                     int slots_per_bucket,
+                                     int* d_output_csr_cols);
 
 #endif  // UTILS_CUH

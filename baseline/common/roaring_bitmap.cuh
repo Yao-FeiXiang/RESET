@@ -1,23 +1,6 @@
 /**
  * @file roaring_bitmap.cuh
  * @brief 动态压缩Roaring位图 - 只分配实际使用的容器，避免内存浪费
- *
- * 优化设计：
- * - 原始问题：为每个节点分配所有可能的容器（即使大部分容器为空），导致内存爆炸
- * - 优化方案：每个节点只分配实际用到的high-bit容器，大幅节省内存
- *
- * 存储结构（设备端连续存储）：
- *   [node_offsets] 每个节点在container_index中的起始偏移 → 长度 num_nodes+1
- *   [container_index] 排序存储所有节点实际使用的容器编号 → 总长度 =
- * 所有节点实际容器数 [bitmap_storage] 每个容器对应的位数组（每个容器固定1024字
- * × 8字节 = 8KB）
- *
- * 内存节省：
- * - 对于平均度数d，每个节点平均只使用 ≈ ceil(d / 65536) 个容器
- * - 示例：100K节点，平均度数10 → 总容器≈ 100K × (10/65536) ≈ 16 容器 → 总位图
- * 16 × 8KB = 128KB！
- * - 原始版本：100K节点，max_key=100K → 每个节点分配2容器 → 总200K容器
- * → 1.6GB，差别巨大！
  */
 
 #ifndef ROARING_BITMAP_CUH
@@ -34,20 +17,7 @@ class RoaringBitmap {
   static constexpr int BITS_PER_WORD = 64;
   static constexpr int LOG_BITS_PER_WORD = 6;
   static constexpr int MASK_BITS_PER_WORD = 0x3F;
-  // 使用21位低位数而不是16位，确保10M节点只需要1个容器
-  // 每个容器大小: 2^21 bits = 256KB，240万节点总内存 = 240万 * 256KB = 614GB
-  // 等等，太大了... 改用22位但使用动态分配：高11位选容器，低21位选位
-  // 实际上，240万节点需要22位，每个节点只需要1个容器(2^22/64=65536字=512KB)
-  // 总内存还是太大...
-  //
-  // 最终方案：放弃"每个节点独立位图"的设计
-  // 改用全局位图：所有节点共享一个连续的地址空间，直接编码node_id和neighbor_id
-  // 但这又回到了cuckoo hash的思路...
-  //
-  // 折中方案：每个节点使用 bitset，但只存储实际有邻居的字
-  // 平均度数3.89，每个节点平均只需要1个word(64bit)
-  // 总内存: 240万 * 8B = 19MB！
-  //
+
   // 让我们重新设计：轻量级Roaring，每个节点只存储存在的word
   static constexpr int CONTAINER_BITS = 22;  // 高1位选容器，低21位选位
   static constexpr int MAX_KEY_LOW = (1 << CONTAINER_BITS);

@@ -79,8 +79,10 @@ class HopscotchHash {
    */
   __device__ bool contains(int node_id, int key) const {
     int node_start = d_offset_[node_id];
-    int capacity = d_offset_[node_id + 1] - node_start;
-    int home = compute_hash(key, capacity);
+    // ✅ 修正：总容量减去邻域大小H才是实际哈希表容量
+    int total_with_h = d_offset_[node_id + 1] - node_start;
+    int capacity = total_with_h - H;
+    int home = standard_hash(key, node_id, capacity);
 
     uint32_t bm = d_bitmap_[node_start + home];
 
@@ -88,9 +90,12 @@ class HopscotchHash {
       // 提取最低有效位
       int i = __ffs(bm) - 1;
       bm ^= (1U << i);
-      int pos = node_start + home + i;
-      if (d_table_[pos] == key) {
-        return true;
+      // ✅ 边界检查：确保位置在有效范围内
+      if (home + i < total_with_h) {
+        int pos = node_start + home + i;
+        if (d_table_[pos] == key) {
+          return true;
+        }
       }
     }
 
@@ -103,10 +108,13 @@ class HopscotchHash {
    */
   size_t total_capacity() const { return total_capacity_; }
 
+  // 获取设备端指针
+  int* get_device_offset() const { return d_offset_; }
+  int* get_device_table() const { return d_table_; }
+  int* get_device_bitmap() const { return d_bitmap_; }
+
  private:
-  __device__ __forceinline__ int compute_hash(int key, int capacity) const {
-    return (key * 31 + (key >> 5)) % capacity;
-  }
+  // Note: contains() 现在直接使用 standard_hash() from utils.cuh
 
   int* d_offset_;          // 每个节点的起始偏移
   int* d_table_;           // 所有哈希表存储 (扁平化连续)

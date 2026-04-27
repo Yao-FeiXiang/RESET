@@ -11,9 +11,6 @@
 #include "tc.cuh"
 #include "tc_cuco.cuh"
 
-// 默认使用的GPU设备编号
-#define DEV 0
-
 int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cerr << "用法: " << argv[0] << " <输入文件夹>" << std::endl;
@@ -43,7 +40,7 @@ int main(int argc, char* argv[]) {
   int bucket_size = 5;
 
   bool run_original = true;
-  bool run_cuco = true;
+  bool run_cuco = false;
 
   // ==================== 参数解析 ====================
   for (int i = 2; i < argc; i++) {
@@ -52,15 +49,30 @@ int main(int argc, char* argv[]) {
       load_factor = std::stof(arg.substr(8));
     } else if (arg.rfind("--bucket=", 0) == 0) {
       bucket_size = std::stoi(arg.substr(9));
-    } else if (arg == "--method=original") {
-      run_original = true;
-      run_cuco = false;
-    } else if (arg == "--method=cuco") {
+    } else if (arg.rfind("--method=", 0) == 0) {
+      // 重置所有方法为 false
       run_original = false;
-      run_cuco = true;
+      run_cuco = false;
+
+      // 解析逗号分隔的方法列表
+      std::vector<std::string> methods = parse_methods(arg.substr(9));
+      for (const auto& method : methods) {
+        if (method == "original") {
+          run_original = true;
+        } else if (method == "cuco") {
+          run_cuco = true;
+        } else {
+          std::cerr << "未知方法: " << method << std::endl;
+          std::cerr << "可用方法: original, cuco" << std::endl;
+          return 1;
+        }
+      }
     } else {
       std::cerr << "未知参数: " << arg << std::endl;
-      std::cerr << "可用方法: --method=[original|cuco]" << std::endl;
+      std::cerr << "用法: " << argv[0]
+                << " <输入文件夹> [--alpha=负载因子] [--bucket=桶大小] "
+                   "[--method=original,cuco]"
+                << std::endl;
       return 1;
     }
   }
@@ -119,7 +131,8 @@ int main(int argc, char* argv[]) {
     printf("[Native] 内核执行时间: %.6f 秒\n", kernel_time_normal / 1000.0);
     printf("三角形数量: %llu\n", result_normal);
 
-    // 分层哈希
+    // 分层哈希 - 排序在计时外完成
+    baseline.reorder_csr_by_hash_layout(graph, bucket_size);
     flush.flush();
 
     auto [result_hierarchical, kernel_time_hierarchical] =

@@ -6,7 +6,7 @@
         "dataset_root": "../../graph_datasets",
         "output_dir": "./output",
         "log_dir": "./logs",
-        "csv_filename": "result.csv"
+        "csv_filename": "hash_methods_result.csv"
     },
     "//2": "==================== 实验过滤配置 ====================",
     "filter": {
@@ -24,7 +24,6 @@
     "ncu": {
         "tmp_dir": "~/ncu_tmp",
         "metrics_map": {
-            "gpu__time_duration.sum": "gpu_cycles_M",
             "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadReq",
             "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadSectors"
         },
@@ -91,7 +90,6 @@
         "sector_per_request",
         "L1GlobalLoadReq",
         "L1GlobalLoadSectors",
-        "gpu_cycles_M",
         "timing_success",
         "ncu_status",
         "retry_count"

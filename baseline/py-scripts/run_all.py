@@ -6,6 +6,34 @@
 - 输出类似LaTeX表格格式的结果
 - 输出完整CSV数据,包含NCU硬件指标
 - 支持自定义参数
+
+==================== 简单使用方法 ====================
+
+1. 运行所有应用的所有测试(含NCU):
+   python run_all.py
+
+2. 只运行计时,不运行NCU(快速测试):
+   python run_all.py --no-ncu
+
+3. 只运行单个应用(如SSS):
+   python run_all.py --apps sss --no-ncu
+
+4. 只运行指定数据集和方法:
+   python run_all.py --apps sss --datasets bm --methods Native cuCollections --no-ncu
+
+5. 运行多个应用:
+   python run_all.py --apps sss tc --no-ncu
+
+6. 自定义参数:
+   python run_all.py --alpha 0.3 --bucket 8 --timeout 600 --retries 2
+
+7. 指定输出文件路径:
+   python run_all.py --latex-output output/my_table.tex --csv-output output/my_data.csv
+
+常用组合(快速验证):
+   python run_all.py --apps sss --datasets bm --methods Native cuCollections --no-ncu
+
+====================================================
 """
 
 import os
@@ -20,6 +48,7 @@ from utils import (
     expand_path,
     run_command_with_retry,
     parse_stdout_timing,
+    parse_stdout_timing_from_output,
     parse_ncu_output,
     calculate_sector_per_request,
     format_results,
@@ -38,51 +67,27 @@ def load_config():
             "datasets": ["bm", "gp", "sc18", "sc19", "sc20", "wt"],
             "methods": [
                 {
-                    "name": "RESET",
-                    "arg": "",
-                    "tag": "RESET",
-                    "kernel_name": "set_intersection_hierarchical",
-                    "launch_skip": 5,
+                    "name": "Native",
+                    "arg": "--method=original",
+                    "tag": "Native",
+                    "kernel_name": "sss_kernel",
+                    "launch_skip": 0,
                     "launch_count": 1,
                 },
                 {
-                    "name": "Native",
-                    "arg": "",
-                    "tag": "Native",
-                    "kernel_name": "set_intersection_plain",
-                    "launch_skip": 5,
+                    "name": "RESET",
+                    "arg": "--method=original",
+                    "tag": "RESET",
+                    "kernel_name": "sss_kernel",
+                    "launch_skip": 1,
                     "launch_count": 1,
                 },
                 {
                     "name": "cuCollections",
                     "arg": "--method=cuco",
                     "tag": "cuCollections",
-                    "kernel_name": "set_intersection_cuco",
-                    "launch_skip": 5,
-                    "launch_count": 1,
-                },
-                {
-                    "name": "Cuckoo",
-                    "arg": "--method=cuckoo",
-                    "tag": "Cuckoo",
-                    "kernel_name": "set_intersection_cuckoo",
-                    "launch_skip": 5,
-                    "launch_count": 1,
-                },
-                {
-                    "name": "Hopscotch",
-                    "arg": "--method=hopscotch",
-                    "tag": "Hopscotch",
-                    "kernel_name": "set_intersection_hopscotch",
-                    "launch_skip": 5,
-                    "launch_count": 1,
-                },
-                {
-                    "name": "Roaring",
-                    "arg": "--method=roaring",
-                    "tag": "Roaring",
-                    "kernel_name": "set_intersection_roaring",
-                    "launch_skip": 5,
+                    "kernel_name": "sss_cuco_kernel",
+                    "launch_skip": 0,
                     "launch_count": 1,
                 },
             ],
@@ -94,27 +99,27 @@ def load_config():
             "datasets": ["ce", "fe", "hp", "lt", "ms", "nq"],
             "methods": [
                 {
-                    "name": "RESET",
-                    "arg": "",
-                    "tag": "RESET",
-                    "kernel_name": "retrieval_hierarchical",
-                    "launch_skip": 5,
+                    "name": "Native",
+                    "arg": "--method=original",
+                    "tag": "Native",
+                    "kernel_name": "ir_kernel",
+                    "launch_skip": 0,
                     "launch_count": 1,
                 },
                 {
-                    "name": "Native",
-                    "arg": "",
-                    "tag": "Native",
-                    "kernel_name": "retrieval_plain",
-                    "launch_skip": 5,
+                    "name": "RESET",
+                    "arg": "--method=original",
+                    "tag": "RESET",
+                    "kernel_name": "ir_kernel",
+                    "launch_skip": 1,
                     "launch_count": 1,
                 },
                 {
                     "name": "cuCollections",
                     "arg": "--method=cuco",
                     "tag": "cuCollections",
-                    "kernel_name": "retrieval_cuco",
-                    "launch_skip": 5,
+                    "kernel_name": "ir_cuco_kernel",
+                    "launch_skip": 0,
                     "launch_count": 1,
                 },
             ],
@@ -126,27 +131,27 @@ def load_config():
             "datasets": ["bm", "gp", "sc18", "sc19", "sc20", "wt"],
             "methods": [
                 {
-                    "name": "RESET",
-                    "arg": "",
-                    "tag": "RESET",
-                    "kernel_name": "triangulation_hierarchical",
-                    "launch_skip": 5,
+                    "name": "Native",
+                    "arg": "--method=original",
+                    "tag": "Native",
+                    "kernel_name": "tc_kernel",
+                    "launch_skip": 0,
                     "launch_count": 1,
                 },
                 {
-                    "name": "Native",
-                    "arg": "",
-                    "tag": "Native",
-                    "kernel_name": "triangulation_plain",
-                    "launch_skip": 5,
+                    "name": "RESET",
+                    "arg": "--method=original",
+                    "tag": "RESET",
+                    "kernel_name": "tc_kernel",
+                    "launch_skip": 1,
                     "launch_count": 1,
                 },
                 {
                     "name": "cuCollections",
                     "arg": "--method=cuco",
                     "tag": "cuCollections",
-                    "kernel_name": "triangulation_cuco",
-                    "launch_skip": 5,
+                    "kernel_name": "tc_cuco_kernel",
+                    "launch_skip": 0,
                     "launch_count": 1,
                 },
             ],
@@ -161,14 +166,13 @@ def load_config():
         "metrics_map": {
             "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadSectors",
             "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": "L1GlobalLoadReq",
-            "gpu__time_duration.sum": "GPU_duration_ms",
         },
     }
 
     return apps, ncu_config
 
 
-def run_timing_only(
+def run_timing_with_output(
     executable: Path,
     dataset_path: Path,
     method: Dict,
@@ -177,8 +181,10 @@ def run_timing_only(
     log_dir: Path,
     timeout: int,
     max_retries: int,
-) -> Dict[str, Any]:
-    """只运行计时,不运行NCU"""
+) -> Tuple[Dict[str, Any], str]:
+    """运行计时并返回 stdout（用于缓存）
+    返回: (结果字典, stdout字符串)
+    """
     method_name = method["name"]
     method_tag = method["tag"]
     method_arg = method.get("arg", "")
@@ -194,30 +200,53 @@ def run_timing_only(
     )
 
     if not success:
-        return {
-            "app": app_name,
-            "dataset": dataset_name,
-            "application_name": app_name,
-            "method_name": method_name,
-            "kernel_time_ms": None,
-            "timing_success": False,
-            "ncu_status": "SKIPPED",
-            "retry_count": 0,
-        }
+        return (
+            {
+                "app": app_name,
+                "dataset": dataset_name,
+                "application_name": app_name,
+                "method_name": method_name,
+                "kernel_time_ms": None,
+                "timing_success": False,
+                "ncu_status": "SKIPPED",
+                "retry_count": 0,
+            },
+            stdout,
+        )
 
     timing_ms = parse_stdout_timing(stdout, method_tag)
     timing_success = timing_ms is not None
 
-    return {
-        "app": app_name,
-        "dataset": dataset_name,
-        "application_name": app_name,
-        "method_name": method_name,
-        "kernel_time_ms": timing_ms,
-        "timing_success": timing_success,
-        "ncu_status": "SKIPPED",
-        "retry_count": 0,
-    }
+    return (
+        {
+            "app": app_name,
+            "dataset": dataset_name,
+            "application_name": app_name,
+            "method_name": method_name,
+            "kernel_time_ms": timing_ms,
+            "timing_success": timing_success,
+            "ncu_status": "SKIPPED",
+            "retry_count": 0,
+        },
+        stdout,
+    )
+
+
+def run_timing_only(
+    executable: Path,
+    dataset_path: Path,
+    method: Dict,
+    app_name: str,
+    dataset_name: str,
+    log_dir: Path,
+    timeout: int,
+    max_retries: int,
+) -> Dict[str, Any]:
+    """只运行计时,不运行NCU（简化版本，不返回stdout）"""
+    result, _ = run_timing_with_output(
+        executable, dataset_path, method, app_name, dataset_name, log_dir, timeout, max_retries
+    )
+    return result
 
 
 def run_ncu_collection(
@@ -253,8 +282,6 @@ def run_ncu_collection(
 
     if method_arg:
         cmd.append(method_arg)
-
-    log_path = log_dir / f"ncu_{executable.parent.name}_{dataset_path.name}_{method_name}.log"
 
     env = os.environ.copy()
     env["TMPDIR"] = str(ncu_tmp)
@@ -323,6 +350,8 @@ def run_app_test(
     """运行单个应用的所有测试,同时返回:
     - 用于LaTeX的字典结果
     - 用于CSV的列表结果
+
+    优化: Native+RESET 使用同一个 --method=original 运行，避免重复执行两次
     """
     script_dir = Path(__file__).parent.absolute()
     executable = script_dir / app_config["executable"]
@@ -335,6 +364,11 @@ def run_app_test(
     print(f"  {app_config['name']}")
     print(f"{'='*60}")
 
+    # 缓存: --method=original 运行一次后，缓存计时结果供 Native 和 RESET 共享
+    timing_cache: Dict[Tuple[str, str], Dict[str, Any]] = (
+        {}
+    )  # (dataset, "original") -> timing_result dict
+
     for dataset in app_config["datasets"]:
         dataset_path = dataset_root / dataset
         if not dataset_path.exists():
@@ -344,15 +378,56 @@ def run_app_test(
         print(f"\n  数据集: {dataset}")
         latex_results[dataset] = {}
 
+        # 数据集内存需求检查（避免GPU内存不足导致运行失败）
+        MEMORY_THRESHOLD_GB = 18.0
+        dataset_memory_requirements = {
+            "ms": 25.0,  # ms 数据集需要约 25GB
+            "fe": 12.0,  # fe 数据集需要约 12GB
+            "gp": 8.0,
+            "bm": 6.0,
+        }
+
+        required_gb = dataset_memory_requirements.get(dataset, 4.0)
+        if required_gb > MEMORY_THRESHOLD_GB:
+            print(f"  ⚠ 数据集 {dataset} 预计需要 {required_gb}GB GPU内存")
+            print(f"  ⚠ 当前阈值为 {MEMORY_THRESHOLD_GB}GB，跳过此数据集")
+            continue
+
         for method in app_config["methods"]:
             method_name = method["name"]
+            method_arg = method.get("arg", "")
             print(f"\n  ── {method_name} ──")
 
-            # 1. 运行计时
+            # 1. 运行计时 - 使用缓存机制避免重复运行
             print(f"  [1/2] 运行计时...")
-            timing_result = run_timing_only(
-                executable, dataset_path, method, app_name, dataset, log_dir, timeout, max_retries
-            )
+            cache_key = (dataset, method_arg)
+
+            if cache_key in timing_cache:
+                # 使用缓存的计时结果，但解析当前 method 的特定 tag
+                cached_result = timing_cache[cache_key]
+                timing_result = cached_result.copy()
+                # 重新解析当前 method 的计时（从缓存的 stdout）
+                timing_ms = parse_stdout_timing_from_output(cached_result["_stdout"], method["tag"])
+                timing_result["method_name"] = method_name
+                timing_result["kernel_time_ms"] = timing_ms
+                timing_result["timing_success"] = timing_ms is not None
+                print(f"    ✓ 使用缓存计时结果")
+            else:
+                # 首次运行，保存 stdout 到缓存
+                timing_result, stdout = run_timing_with_output(
+                    executable,
+                    dataset_path,
+                    method,
+                    app_name,
+                    dataset,
+                    log_dir,
+                    timeout,
+                    max_retries,
+                )
+                # 缓存原始 stdout 供后续同 arg 的方法使用
+                if method_arg == "--method=original":
+                    timing_result["_stdout"] = stdout
+                    timing_cache[cache_key] = timing_result
 
             # 2. 运行NCU(如果启用)
             ncu_result = {}
@@ -369,11 +444,12 @@ def run_app_test(
                 )
             else:
                 ncu_result = {"ncu_status": "SKIPPED", "metrics": {}, "retry_count": 0}
-                if enable_ncu:
+                if enable_ncu and not timing_result["timing_success"]:
                     print(f"  [2/2] NCU跳过(计时失败)")
 
-            # 合并结果
+            # 合并结果 - 删除内部缓存字段
             row = timing_result.copy()
+            row.pop("_stdout", None)
             row.update(ncu_result.get("metrics", {}))
             row["ncu_status"] = ncu_result.get("ncu_status", "SKIPPED")
             row["retry_count"] = ncu_result.get("retry_count", 0)
@@ -391,8 +467,41 @@ def run_app_test(
     return latex_results, csv_results
 
 
+def format_latex_value(val: Any, column_name: str) -> str:
+    """
+    根据列名智能格式化 LaTeX 表格数值
+    - 时间列 (ms, cycles, 等): 保留2位小数
+    - 大数值列 (Requests, Sectors, 等): 使用千位分隔符
+    - 比率列 (sector_per_request, 等): 保留2位小数
+    """
+    if val is None or val == "N/A" or (isinstance(val, float) and val != val):
+        return "N/A"
+
+    # 数值格式化规则
+    if isinstance(val, (int, float)):
+        # 时间类列 - 2位小数
+        if any(t in column_name.lower() for t in ["time", "ms", "cycle", "latency", "duration"]):
+            return f"{val:.2f}"
+        # 比率类列 - 2位小数
+        elif any(r in column_name.lower() for r in ["per_", "ratio", "rate"]):
+            return f"{val:.2f}"
+        # 大数值计数类 - 千位分隔符整数
+        elif any(c in column_name.lower() for c in ["req", "sector", "count", "bytes"]):
+            if isinstance(val, float):
+                val = int(val)
+            return f"{val:,}".replace(",", "\\,")  # LaTeX 千位分隔符
+        # 默认 - 2位小数
+        else:
+            return f"{val:.2f}"
+
+    return str(val)
+
+
 def generate_latex_table(latex_results: Dict, apps_config: Dict) -> str:
-    """生成类似LaTeX的表格输出"""
+    """
+    生成 LaTeX 表格输出
+    根据列名自动应用相应的数值格式规则
+    """
     lines = []
 
     for app_name, app_results in latex_results.items():
@@ -400,10 +509,10 @@ def generate_latex_table(latex_results: Dict, apps_config: Dict) -> str:
         methods = [m["name"] for m in app_config["methods"]]
 
         lines.append("")
-        lines.append(f"% {app_config['name']}")
-        lines.append("\\begin{table}[h]")
+        lines.append(f"% {app_config['name']} - Kernel Time (ms)")
+        lines.append("\\begin{table}[htbp]")
         lines.append("  \\centering")
-        lines.append(f"  \\caption{{{app_config['name']} 性能比较}}")
+        lines.append(f"  \\caption{{{app_config['name']} 内核执行时间比较 (ms)}}")
         lines.append("  \\begin{tabular}{@{}l" + "r" * len(methods) + "@{}}")
         lines.append("    \\toprule")
 
@@ -415,23 +524,19 @@ def generate_latex_table(latex_results: Dict, apps_config: Dict) -> str:
         lines.append(header)
         lines.append("    \\midrule")
 
-        # 数据行
-        lines.append("    \\multicolumn{4}{@{}c@{}}{\\textbf{Kernel Time (ms)}} \\\\")
+        # 数据行 - 时间列使用 .2f 格式
         for dataset in app_config["datasets"]:
             if dataset in app_results:
                 row = f"    {dataset}"
                 for m in methods:
-                    val = app_results[dataset].get(m, "N/A")
-                    if isinstance(val, float):
-                        row += f" & {val:.2f}"
-                    else:
-                        row += f" & {val}"
+                    val = app_results[dataset].get(m)
+                    row += f" & {format_latex_value(val, 'kernel_time')}"
                 row += " \\\\"
                 lines.append(row)
 
         lines.append("    \\bottomrule")
         lines.append("  \\end{tabular}")
-        lines.append(f"  \\label{{tab:{app_name}_performance}}")
+        lines.append(f"  \\label{{tab:{app_name}_kernel_time}}")
         lines.append("\\end{table}")
         lines.append("")
 
@@ -494,7 +599,7 @@ def main():
         "--latex-output", type=str, default="output/results_table.tex", help="输出LaTeX文件名"
     )
     parser.add_argument("--csv-output", type=str, default="output/res.csv", help="输出CSV文件名")
-    parser.add_argument("--log-dir", type=str, default="output/logs", help="日志目录")
+    parser.add_argument("--log-dir", type=str, default="logs", help="日志目录")
     args = parser.parse_args()
 
     apps_config, ncu_config = load_config()
@@ -556,18 +661,17 @@ def main():
 
     # 保存CSV文件
     csv_output_path = script_dir / args.csv_output
+    # CSV 列顺序：原始数值优先，不使用科学计数法列
     custom_columns = [
         "app",
         "dataset",
         "application_name",
         "method_name",
         "kernel_time_ms",
-        "L1GlobalLoadReq_e6",
-        "L1GlobalLoadSectors_e6",
-        "sector_per_request",
         "L1GlobalLoadReq",
         "L1GlobalLoadSectors",
-        "GPU_duration_ms",
+        "sector_per_request",
+        "gpu_cycles_M",
         "timing_success",
         "ncu_status",
         "retry_count",

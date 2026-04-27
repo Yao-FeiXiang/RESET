@@ -1,78 +1,34 @@
+/**
+ * @file tc_cuco.cu
+ * @brief TC cuCollections基线实现 - 每节点版本
+ *
+ * 架构对齐：
+ * - 每节点独立哈希表 + 连续存储
+ * - 通过offset寻址
+ * - 与cuckoo、hopscotch等方法保持一致的架构
+ */
+
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
-#include "../common/cuco_baseline.cuh"
+#include "../common/cuco.cuh"
+#include "../common/utils.cuh"
 #include "tc_cuco.cuh"
 
 /**
- * @brief 编码(u, v)边对为64位键
- * 确保u < v避免重复存储
- */
-__host__ __device__ __forceinline__ std::uint64_t encode_edge_key(int u,
-                                                                  int v) {
-  if (u > v) {
-    int tmp = u;
-    u = v;
-    v = tmp;
-  }
-  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(u)) << 32) |
-         static_cast<std::uint32_t>(v);
-}
-
-/**
- * @brief TC cuCollections基线类
+ * @brief TC计数内核 - 使用cuco哈希表查找三角形
  *
- * 继承公共基类,实现TC特有的数据编码和内核启动
+ * 架构变化：不再使用全局表 + 64位边编码
+ * 改为直接查询节点v的哈希表中是否存在邻接点w
+ *
+ * 对齐：小度数优先优化 + 动态负载均衡
  */
-class TCCuCollections : public CuCollectionsStaticSetBase<std::uint64_t> {
- public:
-  using base_type = CuCollectionsStaticSetBase<std::uint64_t>;
-
-  /**
-   * @brief 构造函数
-   * @param total_edges 总边数量
-   */
-  explicit TCCuCollections(std::size_t total_edges)
-      : base_type(total_edges, 2.0f) {}
-
-  /**
-   * @brief 从CSR格式构建边集合
-   * @param csr_offsets CSR偏移数组
-   * @param csr_cols CSR列数组
-   * @param num_nodes 节点数量
-   * @param stream CUDA流
-   */
-  void build(std::vector<int> const& csr_offsets,
-             std::vector<int> const& csr_cols, int num_nodes,
-             cudaStream_t stream = 0) {
-    std::size_t total_edges = csr_cols.size();
-    thrust::host_vector<key_type> h_keys(total_edges);
-
-    // 编码所有边 - 存储每条边,不过滤
-    for (int u = 0; u < num_nodes; ++u) {
-      int start = csr_offsets[u];
-      int end = csr_offsets[u + 1];
-      for (int p = start; p < end; ++p) {
-        int v = csr_cols[p];
-        h_keys[p] = encode_edge_key(u, v);
-      }
-    }
-
-    // 插入键到cuCollections集合
-    insert_keys(h_keys, stream);
-  }
-};
-
-/**
- * @brief TC计数内核 - 使用cuCollections查找三角形
- * 完全对齐baseline实现：小度数优先优化 + 动态负载均衡
- */
-template <typename SetContainsRef>
 __global__ void tc_cuco_kernel(int num_edges, int const* __restrict__ d_vertexs,
                                int const* __restrict__ d_edge_cols,
                                int const* __restrict__ d_csr_row,
                                int const* __restrict__ d_csr_cols,
-                               SetContainsRef set_ref,
+                               int* __restrict__ d_slots,
+                               long long* __restrict__ d_offsets,
                                unsigned long long* d_total_count,
                                int* d_edge_index, int CHUNK_SIZE) {
   __shared__ unsigned long long block_count;
@@ -117,9 +73,12 @@ __global__ void tc_cuco_kernel(int num_edges, int const* __restrict__ d_vertexs,
       int j = lane_id + iter * 32;
       if (j < u_size) {
         int w = d_csr_cols[u_start + j];
-        if (w > u) {
-          auto qk = encode_edge_key(v, w);
-          if (set_ref.contains(qk)) {
+        // 关键约束：只计数 w > v 的公共邻居，确保三角形(u, v, w)只被计数一次
+        // 由于u < v（TC格式保证），w > v 意味着 u < v < w，三角形唯一由边(u,
+        // v)计数
+        if (w > v) {
+          // 直接查询v节点的表中是否存在w
+          if (cuco_contains(v, w, d_slots, d_offsets, CucoHash::EMPTY_KEY)) {
             thread_count++;
           }
         }
@@ -138,18 +97,13 @@ __global__ void tc_cuco_kernel(int num_edges, int const* __restrict__ d_vertexs,
     }
   }
 
-  unsigned int found_mask = __ballot_sync(0xffffffff, thread_count > 0);
-  unsigned long long total = thread_count;
-  unsigned int mask = found_mask;
-  while (mask) {
-    int bit = __ffs(mask) - 1;
-    unsigned long long count = thread_count;
-    total += __shfl_sync(0xffffffff, count, bit);
-    mask ^= (1 << bit);
-  }
+  // 将线程计数累加到块计数（与基准实现对齐）
+  atomicAdd(&block_count, thread_count);
+  __syncthreads();
 
-  if (lane_id == 0 && total > 0) {
-    atomicAdd(d_total_count, total);
+  // 将块计数累加到全局结果
+  if (threadIdx.x == 0) {
+    atomicAdd(d_total_count, block_count);
   }
 }
 
@@ -174,13 +128,14 @@ std::pair<unsigned long long, float> run_tc_cuco(
   cudaMemcpyAsync(d_edge_index, &h_edge_index, sizeof(int),
                   cudaMemcpyHostToDevice, stream);
 
-  // 构建cuCollections集合
-  std::size_t total_edges = csr_cols_host.size();
-  TCCuCollections tc_cuco(total_edges);
-  tc_cuco.build(csr_row_host, csr_cols_host, num_nodes, stream);
+  // 构建cuco哈希表
+  std::vector<int> degrees(num_nodes);
+  for (int i = 0; i < num_nodes; i++) {
+    degrees[i] = csr_row_host[i + 1] - csr_row_host[i];
+  }
 
-  // 启动内核
-  auto contains_ref = tc_cuco.get_contains_ref();
+  CucoHash cuco(num_nodes, degrees, load_factor);
+  cuco.bulk_insert(csr_row_host, csr_cols_host, stream);
 
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;
@@ -190,8 +145,8 @@ std::pair<unsigned long long, float> run_tc_cuco(
   cudaEventRecord(start);
   tc_cuco_kernel<<<grid_size, block_size, 0, stream>>>(
       num_edges, d_vertexs, d_csr_cols_for_traversal, d_csr_row,
-      d_csr_cols_for_traversal, contains_ref, d_triangle_count, d_edge_index,
-      CHUNK_SIZE);
+      d_csr_cols_for_traversal, cuco.get_device_table(),
+      cuco.get_device_offsets(), d_triangle_count, d_edge_index, CHUNK_SIZE);
   cudaEventRecord(stop);
   cudaEventSynchronize(stop);
 
@@ -206,6 +161,7 @@ std::pair<unsigned long long, float> run_tc_cuco(
   cudaMemcpy(&triangle_count, d_triangle_count, sizeof(unsigned long long),
              cudaMemcpyDeviceToHost);
   cudaFree(d_triangle_count);
+  cudaFree(d_edge_index);
 
   cudaStreamSynchronize(stream);
   return {triangle_count, kernel_time_ms};

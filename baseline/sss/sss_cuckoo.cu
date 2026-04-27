@@ -10,11 +10,6 @@
  * @file sss_cuckoo.cu
  * @brief SSS任务布谷鸟哈希基线实现 - 扁平化每节点版本
  *
- * 重构特点：
- * - 每个节点独立构建布谷鸟哈希表,保存其邻接点
- * - 所有哈希表扁平化连续存储在一个大数组中
- * - 通过offset数组定位每个节点的哈希表起始位置
- * - 添加30秒超时机制,避免无限循环构建
  */
 
 /**
@@ -65,60 +60,28 @@ __global__ void sss_cuckoo_kernel(
       if (active) {
         int neighbor = d_csr_cols[u_neighbour_start + j];
         // 在v节点的哈希表中查找邻接点是否存在
-        // 直接内联查询,检查三个候选位置 + stash
+        // 直接内联查询,检查两个候选位置 + stash
         long long start = d_offsets[v];
         int capacity = static_cast<int>(d_offsets[v + 1] - start);
 
-        // 三个完全独立的哈希,和插入完全一致
-        // 布谷鸟不变性：key一定在这三个位置之一或者在stash中
-        uint64_t node_salt = (uint64_t)v * 1111111111ULL;
-        uint64_t k1 = (uint64_t)neighbor ^ node_salt;
-        uint64_t k2 = (uint64_t)neighbor + node_salt;
-        uint64_t k3 = (uint64_t)neighbor * (node_salt | 0x12345678ULL);
+        int h1 = standard_hash(neighbor, v, capacity);
+        int h2 = standard_hash2(neighbor, v, capacity);
 
-        // 第一个哈希 - 和插入完全一致
-        k1 ^= k1 >> 33;
-        k1 *= 0xff51afd7ed558ccdULL;
-        k1 ^= k1 >> 33;
-        k1 *= 0xc4ceb9fe1a85ec53ULL;
-        k1 ^= k1 >> 33;
-        long long pos1 = start + ((long long)k1 & (capacity - 1));
+        long long pos1 = start + h1;
+        long long pos2 = start + h2;
 
         if (d_table[pos1] == neighbor) {
           found = true;
+        } else if (d_table[pos2] == neighbor) {
+          found = true;
         } else {
-          // 第二个哈希 - 和插入完全一致
-          k2 ^= k2 >> 33;
-          k2 *= 0xd6e8feb86b5680bfULL;
-          k2 ^= k2 >> 33;
-          k2 *= 0xcaaf0aaf9603b2e5ULL;
-          k2 ^= k2 >> 33;
-          long long pos2 = start + ((long long)k2 & (capacity - 1));
-
-          if (d_table[pos2] == neighbor) {
-            found = true;
-          } else {
-            // 第三个哈希 - 和插入完全一致
-            k3 ^= k3 >> 33;
-            k3 *= 0xaed549a354e3eb1bULL;
-            k3 ^= k3 >> 33;
-            k3 *= 0x8058d66927ac9adfULL;
-            k3 ^= k3 >> 33;
-            long long pos3 = start + ((long long)k3 & (capacity - 1));
-
-            if (d_table[pos3] == neighbor) {
+          // 主表没找到,检查stash
+          long long stash_start = v * 16LL;  // STASH_SIZE = 16
+          int stash_count = static_cast<int>(d_stash_starts[v]);
+          for (int i = 0; i < stash_count; i++) {
+            if (d_stash_data[stash_start + i] == neighbor) {
               found = true;
-            } else {
-              // 主表没找到,检查stash
-              long long stash_start = d_stash_starts[v];
-              int stash_count =
-                  static_cast<int>(d_stash_starts[v + 1] - d_stash_starts[v]);
-              for (int i = 0; i < stash_count; i++) {
-                if (d_stash_data[stash_start + i] == neighbor) {
-                  found = true;
-                  break;
-                }
-              }
+              break;
             }
           }
         }
@@ -246,8 +209,8 @@ std::pair<int, float> run_sss_cuckoo(
   }
 
   // 输出统计信息
-  printf("总容量：%lld,插入失败：%d\n", d_cuckoo->get_total_capacity(),
-         d_cuckoo->get_failed_count());
+  // printf("总容量：%lld,插入失败：%d\n",
+  // d_cuckoo->get_total_capacity(),d_cuckoo->get_failed_count());
 
   // 清理资源
   cudaEventDestroy(kernel_start);

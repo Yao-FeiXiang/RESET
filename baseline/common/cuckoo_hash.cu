@@ -14,40 +14,22 @@
 #include "cuckoo_hash.cuh"
 
 /**
- * Device 辅助函数：计算key的三个哈希位置
+ * Device 辅助函数：计算key的两个标准哈希位置
+ * ✅ 优化：从3个复杂哈希减少到2个简单哈希,统一复杂度
+ * - 原: 3 * (3 SHIFT + 2 IMUL + 2 XOR) + node_salt计算 ≈ 20条指令
+ * - 新: 2 * (1 XOR + 1 AND) = 4条指令
+ * - 哈希开销: -80%
  */
 __device__ __forceinline__ void compute_hashes(int node_id, int key,
                                                long long start, int capacity,
                                                long long& pos1, long long& pos2,
                                                long long& pos3) {
-  uint64_t node_salt = (uint64_t)node_id * 1111111111ULL;
-  uint64_t k1 = (uint64_t)key ^ node_salt;
-  uint64_t k2 = (uint64_t)key + node_salt;
-  uint64_t k3 = (uint64_t)key * (node_salt | 0x12345678ULL);
+  int h1 = standard_hash(key, node_id, capacity);
+  int h2 = standard_hash2(key, node_id, capacity);
 
-  // 哈希1
-  k1 ^= k1 >> 33;
-  k1 *= 0xff51afd7ed558ccdULL;
-  k1 ^= k1 >> 33;
-  k1 *= 0xc4ceb9fe1a85ec53ULL;
-  k1 ^= k1 >> 33;
-  pos1 = start + ((long long)k1 & (capacity - 1));
-
-  // 哈希2
-  k2 ^= k2 >> 33;
-  k2 *= 0xd6e8feb86b5680bfULL;
-  k2 ^= k2 >> 33;
-  k2 *= 0xcaaf0aaf9603b2e5ULL;
-  k2 ^= k2 >> 33;
-  pos2 = start + ((long long)k2 & (capacity - 1));
-
-  // 哈希3
-  k3 ^= k3 >> 33;
-  k3 *= 0xaed549a354e3eb1bULL;
-  k3 ^= k3 >> 33;
-  k3 *= 0x8058d66927ac9adfULL;
-  k3 ^= k3 >> 33;
-  pos3 = start + ((long long)k3 & (capacity - 1));
+  pos1 = start + h1;
+  pos2 = start + h2;
+  pos3 = pos2;  // 第三位置与第二位置相同(双哈希方案)
 }
 
 /**
@@ -76,8 +58,11 @@ __global__ void flat_cuckoo_insert_kernel(
   int degree = csr_offsets[node_id + 1] - csr_offsets[node_id];
   long long start = offsets[node_id];
   int capacity = static_cast<int>(offsets[node_id + 1] - start);
-  long long my_stash_start = stash_starts[node_id];
-  int* my_stash = stash_data + my_stash_start;
+
+  // ✅ 修复：stash按node_id * STASH_SIZE寻址,与查询保持一致
+  long long my_stash_offset =
+      static_cast<long long>(node_id) * FlatCuckooHash::STASH_SIZE;
+  int* my_stash = stash_data + my_stash_offset;
   int my_stash_count = 0;
 
   // 初始化stash计数
@@ -90,6 +75,12 @@ __global__ void flat_cuckoo_insert_kernel(
     // 计算这个key的三个候选位置
     long long pos1, pos2, pos3;
     compute_hashes(node_id, key, start, capacity, pos1, pos2, pos3);
+
+    // ✅ 修复：首先检查key是否已经存在（处理重复边）
+    // 如果key已经在哈希表中,直接跳过,避免不必要的踢出
+    if (table[pos1] == key || table[pos2] == key || table[pos3] == key) {
+      continue;
+    }
 
     // 依次尝试三个位置
     if (table[pos1] == FlatCuckooHash::EMPTY_KEY) {
@@ -156,8 +147,11 @@ __global__ void flat_cuckoo_insert_kernel(
 
     if (!inserted) {
       // 踢出失败,尝试放入stash
+      // ✅ 修复：放入的是current_key而不是key！
+      // 经过踢出循环后,我们要放的是最后被踢出来的current_key
+      // 而不是最初的key(key已经被放到某个位置了)
       if (my_stash_count < stash_size) {
-        my_stash[my_stash_count++] = key;
+        my_stash[my_stash_count++] = current_key;
         inserted = true;
       } else {
         // stash也满了,真的失败了
@@ -225,11 +219,24 @@ FlatCuckooHash::FlatCuckooHash(int num_nodes, const std::vector<int>& degrees,
              cudaMemcpyHostToDevice);
   delete[] h_temp;
 
+  // ✅ 修复：初始化stash数据为EMPTY_KEY,避免随机垃圾值导致false positive
+  int* h_stash_temp = new int[total_stash_capacity_];
+  for (long long i = 0; i < total_stash_capacity_; i++) {
+    h_stash_temp[i] = FlatCuckooHash::EMPTY_KEY;
+  }
+  cudaMemcpy(d_stash_data_, h_stash_temp, total_stash_capacity_ * sizeof(int),
+             cudaMemcpyHostToDevice);
+  delete[] h_stash_temp;
+
+  // ✅ 修复：stash_starts初始化为0(表示每个node的stash计数为0),而不是偏移
+  // 之前错误地初始化为 i * STASH_SIZE,导致内核中读取到错误值
+  std::vector<long long> h_stash_count(num_nodes + 1, 0);
+  cudaMemcpy(d_stash_starts_, h_stash_count.data(),
+             (num_nodes + 1) * sizeof(long long), cudaMemcpyHostToDevice);
+
   // 拷贝偏移数组到设备
   cudaMemcpy(d_offsets_, h_offsets_.data(), (num_nodes + 1) * sizeof(long long),
              cudaMemcpyHostToDevice);
-  cudaMemcpy(d_stash_starts_, h_stash_starts_.data(),
-             (num_nodes + 1) * sizeof(long long), cudaMemcpyHostToDevice);
 
   CHECK_CUDA_ERROR();
 }

@@ -40,8 +40,13 @@ class SSSBaseline : public HashTableBuilder {
   // 分配结果缓冲区
   void allocate_buffers();
 
-  // 按分层哈希表存储顺序重排 CSR 列(替代 thrust 排序),在计时前完成
-  void pre_sort_csr_cols(CSRGraph& graph, int bucket_size);
+  // 优化版：从分层哈希表直接提取，按哈希桶顺序重排CSR列（计时外预处理）
+  void reorder_csr_by_hash_layout(CSRGraph& graph, int slots_per_bucket);
+
+  // 兼容旧接口（内部调用新接口）
+  void pre_sort_csr_cols(CSRGraph& graph, int bucket_size) {
+    reorder_csr_by_hash_layout(graph, bucket_size);
+  }
 
   // 获取排序后的CSR列指针
   int* get_sorted_csr_cols() const { return d_csr_cols_sorted_; }

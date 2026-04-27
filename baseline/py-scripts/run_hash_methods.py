@@ -18,7 +18,6 @@ SSS实验自动化脚本
 
 输出列说明:
   kernel_time_ms: 内核执行时间(ms, 2位小数)
-  gpu_cycles_M: GPU执行周期数(百万周期)
   L1GlobalLoadReq: L1全局加载请求数(整数)
   L1GlobalLoadSectors: L1全局加载扇区数(整数)
   sector_per_request: 平均每个请求的扇区数
@@ -54,7 +53,7 @@ from utils import (
 )
 
 
-def load_config(config_path: str = "config.json") -> Dict[str, Any]:
+def load_config(config_path: str = "hash_methods.json") -> Dict[str, Any]:
     """加载JSON配置文件"""
     script_dir = Path(__file__).parent.absolute()
     with open(script_dir / config_path, "r", encoding="utf-8") as f:
@@ -241,6 +240,7 @@ def run_ncu_collection(
 
             if result.returncode == 0:
                 metrics = parse_ncu_output(combined, ncu_config["metrics_map"])
+                print(f"  🚀 方法：{method_name}, NCU采集成功: {metrics}")
                 return {"ncu_status": "OK", "metrics": metrics, "retry_count": attempt}
 
             print(f"  ✗ NCU失败(退出码:{result.returncode})")
@@ -383,7 +383,7 @@ def main():
         failed_entries = []
 
     # 打印实验摘要(根据模式不同)
-    if not args.rerun_failed:
+    if not args.rerun:
         print_experiment_summary(config, all_datasets)
 
     # 确保可执行文件存在
@@ -393,7 +393,7 @@ def main():
 
     # 根据模式选择运行方式
     if args.rerun and failed_entries:
-        print(f"\n🚀 开始重跑 {len(failed_entries)} 个失败条目...\n")
+        print(f"\n  开始重跑 {len(failed_entries)} 个失败条目...\n")
 
         for idx, failed_entry in enumerate(failed_entries, 1):
             dataset_name = failed_entry['dataset']

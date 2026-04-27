@@ -21,7 +21,7 @@ int main(int argc, char* argv[]) {
   }
 
   std::string input_folder = argv[1];
-  float load_factor = 0.2;  // 负载因子
+  float load_factor = 0.2;  // 负载因子 - Hopscotch受邻域约束，暂使用0.2
   int bucket_size = 5;      // 每个位置可存储的桶数量
 
   // 运行控制标志
@@ -38,29 +38,55 @@ int main(int argc, char* argv[]) {
       load_factor = std::stof(arg.substr(8));
     } else if (arg.rfind("--bucket=", 0) == 0) {
       bucket_size = std::stoi(arg.substr(9));
-    } else if (arg == "--method=cuco") {
-      run_cucollections = true;
-    } else if (arg == "--method=cuckoo") {
-      run_cuckoo = true;
-    } else if (arg == "--method=hopscotch") {
-      run_hopscotch = true;
-    } else if (arg == "--method=roaring") {
-      run_roaring = true;
-    } else if (arg == "--method=all") {
-      run_original = true;
-      run_cucollections = true;
-      run_cuckoo = true;
-      run_hopscotch = true;
-      run_roaring = true;
+    } else if (arg.rfind("--method=", 0) == 0) {
+      // 重置所有方法为 false
+      run_original = false;
+      run_cucollections = false;
+      run_cuckoo = false;
+      run_hopscotch = false;
+      run_roaring = false;
+
+      // 解析逗号分隔的方法列表
+      std::vector<std::string> methods = parse_methods(arg.substr(9));
+      if (methods.empty()) {
+        run_original = true;  // 默认运行original方法
+      }
+      for (const auto& method : methods) {
+        if (method == "original") {
+          run_original = true;
+        } else if (method == "cuco") {
+          run_cucollections = true;
+        } else if (method == "cuckoo") {
+          run_cuckoo = true;
+        } else if (method == "hopscotch") {
+          run_hopscotch = true;
+        } else if (method == "roaring") {
+          run_roaring = true;
+        } else if (method == "all") {
+          run_original = true;
+          run_cucollections = true;
+          run_cuckoo = true;
+          run_hopscotch = true;
+          run_roaring = true;
+        } else {
+          std::cerr << "未知方法: " << method << std::endl;
+          std::cerr
+              << "可用方法: original, cuco, cuckoo, hopscotch, roaring, all"
+              << std::endl;
+          return 1;
+        }
+      }
     } else {
       std::cerr << "未知参数: " << arg << std::endl;
-      std::cerr << "可用方法: --method=[all|cuco|cuckoo|hopscotch|roaring]"
+      std::cerr << "用法: " << argv[0]
+                << " <输入文件夹> [--alpha=负载因子] [--bucket=桶大小] "
+                   "[--method=original,cuco,cuckoo,hopscotch,roaring]"
                 << std::endl;
       return 1;
     }
   }
 
-  int dev = 0;
+  int dev = DEV;
   int deviceCount = 0;
   cudaGetDeviceCount(&deviceCount);
   printf("找到 %d 个设备\n", deviceCount);
@@ -106,17 +132,25 @@ int main(int argc, char* argv[]) {
   }
   printf("最大度数: %d\n", max_degree);
 
-  // ==================== 构建哈希表 ====================
-  // 使用完整邻居列表构建哈希表(基线方法的标准做法)
-  // 注意: 与set-similarity-search的差异在于排序和计时范围,已对齐
+  // ==================== 初始化数据和哈希表 ====================
   SSSBaseline baseline;
+
+  // 1. 加载顶点对（所有方法都需要）
+  baseline.load_vertex_pairs(vertexs_path);
+  baseline.allocate_buffers();
+
+  // 2. 构建Native哈希表
   baseline.build_hash_tables(graph.get_num_nodes(), graph.get_host_offsets(),
                              graph.get_host_elements(), load_factor,
                              bucket_size);
 
-  // 加载顶点对到设备
-  baseline.load_vertex_pairs(vertexs_path);
-  baseline.allocate_buffers();
+  // 3. 重排CSR列（初始化d_csr_cols_sorted_供查询使用）
+  baseline.reorder_csr_by_hash_layout(graph, bucket_size);
+
+  // ✅ 不运行original方法时，立即释放Native哈希表内存
+  if (!run_original) {
+    baseline.free_hash_tables();  // 释放~15GB显存
+  }
 
   // 内核配置参数
   const int grid_size = 512;
@@ -124,7 +158,22 @@ int main(int argc, char* argv[]) {
   const int CHUNK_SIZE = 4;
   const float threshold = 0.25;
 
-  check_gpu_memory();
+  // 结果变量 - 用于跨方法一致性检查
+  int result_normal = -1;
+  int result_hierarchical = -1;
+  int result_cuco = -1;
+  int result_cuckoo = -1;
+  int result_hopscotch = -1;
+  int result_roaring = -1;
+
+  double time_normal = 0;
+  double time_hierarchical = 0;
+  double time_cuco = 0;
+  double time_cuckoo = 0;
+  double time_hopscotch = 0;
+  double time_roaring = 0;
+
+  check_gpu_memory(2000);  // ✅ 降低内存检查阈值，适用于优化后方法
 
   // 预排序CSR列(用于hierarchical哈希),在计时前完成(与set-similarity-search一致)
   if (run_original) {
@@ -140,24 +189,28 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    auto [result_normal, kernel_time_normal] =
+    auto [result_normal_val, kernel_time_normal_val] =
         baseline.run_normal(graph, CHUNK_SIZE, grid_size, block_size,
                             bucket_size, threshold, false);
+    result_normal = result_normal_val;
+    time_normal = kernel_time_normal_val;
 
-    std::cout << "[Native] 内核执行时间: " << kernel_time_normal / 1000.0
-              << " 秒" << std::endl;
+    std::cout << "[Native] 内核执行时间: " << time_normal / 1000.0 << " 秒"
+              << std::endl;
     printf("[Native] 集合相似度结果数: %d\n", result_normal);
 
     // 分层哈希
     std::cout << std::endl;
 
     flush.flush();
-    auto [result_hierarchical, kernel_time_hierarchical] =
+    auto [result_hierarchical_val, kernel_time_hierarchical_val] =
         baseline.run_hierarchical(graph, CHUNK_SIZE, grid_size, block_size,
                                   bucket_size, threshold, true);
+    result_hierarchical = result_hierarchical_val;
+    time_hierarchical = kernel_time_hierarchical_val;
 
-    std::cout << "[RESET] 内核执行时间: " << kernel_time_hierarchical / 1000.0
-              << " 秒" << std::endl;
+    std::cout << "[RESET] 内核执行时间: " << time_hierarchical / 1000.0 << " 秒"
+              << std::endl;
     printf("[RESET] 集合相似度结果数: %d\n", result_hierarchical);
 
     // 一致性检查
@@ -166,6 +219,12 @@ int main(int argc, char* argv[]) {
       printf("  普通哈希: %d, 分层哈希: %d\n", result_normal,
              result_hierarchical);
     }
+
+    if (run_cucollections || run_cuckoo || run_hopscotch || run_roaring) {
+      // printf("\n[内存管理] 释放original方法的哈希表内存...\n");
+      baseline.free_hash_tables();
+      check_gpu_memory(2000);  // ✅ 降低内存检查阈值
+    }
   }
 
   // ==================== cuco ====================
@@ -173,16 +232,25 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
     flush.flush();
 
-    auto [result_cuco, kernel_time_cuco] = run_sss_cuco(
+    auto [result_cuco_val, kernel_time_cuco_val] = run_sss_cuco(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
+    result_cuco = result_cuco_val;
+    time_cuco = kernel_time_cuco_val;
 
-    std::cout << "[cuCollections] 内核执行时间: " << kernel_time_cuco / 1000.0
-              << " 秒" << std::endl;
+    std::cout << "[cuCollections] 内核执行时间: " << time_cuco / 1000.0 << " 秒"
+              << std::endl;
     printf("[cuCollections] 集合相似度结果数: %d\n", result_cuco);
+
+    // 与original结果一致性检查
+    if (run_original && result_cuco != result_normal) {
+      printf("\n⚠️  警告: cuCollections与original结果不一致!\n");
+      printf("  original(Native): %d, cuCollections: %d, 差异: %d\n",
+             result_normal, result_cuco, std::abs(result_cuco - result_normal));
+    }
   }
 
   // ==================== 布谷鸟哈希 ====================
@@ -190,16 +258,25 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    auto [result_cuckoo, kernel_time_cuckoo] = run_sss_cuckoo(
+    auto [result_cuckoo_val, kernel_time_cuckoo_val] = run_sss_cuckoo(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
+    result_cuckoo = result_cuckoo_val;
+    time_cuckoo = kernel_time_cuckoo_val;
 
-    std::cout << "[Cuckoo] 内核执行时间: " << kernel_time_cuckoo / 1000.0
-              << " 秒" << std::endl;
+    std::cout << "[Cuckoo] 内核执行时间: " << time_cuckoo / 1000.0 << " 秒"
+              << std::endl;
     printf("[Cuckoo] 集合相似度结果数: %d\n", result_cuckoo);
+
+    // 与original结果一致性检查
+    if (run_original && result_cuckoo != result_normal) {
+      printf("\n⚠️  警告: Cuckoo与original结果不一致!\n");
+      printf("  original(Native): %d, Cuckoo: %d, 差异: %d\n", result_normal,
+             result_cuckoo, std::abs(result_cuckoo - result_normal));
+    }
   }
 
   // ==================== 跳房子哈希 ====================
@@ -207,16 +284,25 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    auto [result_hopscotch, kernel_time_hopscotch] = run_sss_hopscotch(
+    auto [result_hopscotch_val, kernel_time_hopscotch_val] = run_sss_hopscotch(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
+    result_hopscotch = result_hopscotch_val;
+    time_hopscotch = kernel_time_hopscotch_val;
 
-    std::cout << "[Hopscotch] 内核执行时间: " << kernel_time_hopscotch / 1000.0
+    std::cout << "[Hopscotch] 内核执行时间: " << time_hopscotch / 1000.0
               << " 秒" << std::endl;
     printf("[Hopscotch] 集合相似度结果数: %d\n", result_hopscotch);
+
+    // 与original结果一致性检查
+    if (run_original && result_hopscotch != result_normal) {
+      printf("\n⚠️  警告: Hopscotch与original结果不一致!\n");
+      printf("  original(Native): %d, Hopscotch: %d, 差异: %d\n", result_normal,
+             result_hopscotch, std::abs(result_hopscotch - result_normal));
+    }
   }
 
   // ==================== 咆哮位图 ====================
@@ -224,16 +310,43 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     flush.flush();
-    auto [result_roaring, kernel_time_roaring] = run_sss_roaring(
+    auto [result_roaring_val, kernel_time_roaring_val] = run_sss_roaring(
         baseline.get_num_pairs(), graph.get_num_nodes(),
         baseline.get_d_vertexs(), baseline.get_d_csr_cols_for_vertexs(),
         graph.get_device_elements(), graph.get_device_offsets(),
         graph.get_host_offsets(), graph.get_host_elements(), threshold,
         grid_size, block_size, CHUNK_SIZE, load_factor, 0);
+    result_roaring = result_roaring_val;
+    time_roaring = kernel_time_roaring_val;
 
-    std::cout << "[Roaring] 内核执行时间: " << kernel_time_roaring / 1000.0
-              << " 秒" << std::endl;
+    std::cout << "[Roaring] 内核执行时间: " << time_roaring / 1000.0 << " 秒"
+              << std::endl;
     printf("[Roaring] 集合相似度结果数: %d\n", result_roaring);
+
+    // 与original结果一致性检查
+    if (run_original && result_roaring != result_normal) {
+      printf("\n⚠️  警告: Roaring与original结果不一致!\n");
+      printf("  original(Native): %d, Roaring: %d, 差异: %d\n", result_normal,
+             result_roaring, std::abs(result_roaring - result_normal));
+    }
+  }
+
+  // 最终一致性验证总结
+  if (run_original) {
+    bool all_consistent = true;
+    printf("\n一致性验证总结:  ");
+    if (run_cucollections && result_cuco != result_normal)
+      all_consistent = false;
+    if (run_cuckoo && result_cuckoo != result_normal) all_consistent = false;
+    if (run_hopscotch && result_hopscotch != result_normal)
+      all_consistent = false;
+    if (run_roaring && result_roaring != result_normal) all_consistent = false;
+
+    if (all_consistent) {
+      printf("  ✅ 所有已运行方法与original(Native)结果一致\n");
+    } else {
+      printf("  ❌ 部分方法与original(Native)结果存在差异,请检查\n");
+    }
   }
 
   return 0;

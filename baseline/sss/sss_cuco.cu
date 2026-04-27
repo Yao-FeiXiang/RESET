@@ -1,65 +1,35 @@
+/**
+ * @file sss_cuco.cu
+ * @brief SSS cuCollections基线实现 - 每节点版本
+ *
+ * 架构对齐：
+ * - 每节点独立哈希表 + 连续存储
+ * - 通过offset寻址
+ * - 与cuckoo、hopscotch等方法保持一致的架构
+ */
+
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
-#include "../common/cuco_baseline.cuh"
+#include "../common/cuco.cuh"
 #include "../common/utils.cuh"
 #include "sss_cuco.cuh"
 
 /**
- * @brief SSS cuCollections基线类
+ * @brief SSS查询内核 - 使用cuco哈希表计算Jaccard相似度
  *
- * 继承公共基类,实现SSS特有的数据编码和内核启动
+ * 架构变化：不再使用全局表 + 64位边编码
+ * 改为直接查询节点v的哈希表中是否存在邻接点key
+ *
+ * 对齐：每个边一个结果位置,动态负载均衡
  */
-class SSSCuCollections : public CuCollectionsStaticSetBase<std::uint64_t> {
- public:
-  using base_type = CuCollectionsStaticSetBase<std::uint64_t>;
-
-  /**
-   * @brief 构造函数
-   * @param total_edges 总边数量
-   */
-  explicit SSSCuCollections(std::size_t total_edges)
-      : base_type(total_edges, 2.0f) {}
-
-  /**
-   * @brief 从CSR格式构建边集合
-   * @param csr_offsets CSR偏移数组
-   * @param csr_cols CSR列数组
-   * @param num_nodes 节点数量
-   * @param stream CUDA流
-   */
-  void build(std::vector<int> const& csr_offsets,
-             std::vector<int> const& csr_cols, int num_nodes,
-             cudaStream_t stream = 0) {
-    std::size_t total_edges = csr_cols.size();
-    thrust::host_vector<key_type> h_keys(total_edges);
-
-    // 编码所有边 - 存储每条边,不过滤
-    for (int u = 0; u < num_nodes; ++u) {
-      int start = csr_offsets[u];
-      int end = csr_offsets[u + 1];
-      for (int p = start; p < end; ++p) {
-        int v = csr_cols[p];
-        h_keys[p] = encode_edge_key(u, v);
-      }
-    }
-
-    // 插入键到cuCollections集合
-    insert_keys(h_keys, stream);
-  }
-};
-
-/**
- * @brief SSS查询内核 - 使用cuCollections计算Jaccard相似度
- * 完全对齐baseline实现：每个边一个结果位置,动态负载均衡
- */
-template <typename SetContainsRef>
 __global__ void sss_cuco_kernel(
     int num_edges, int const* __restrict__ d_vertexs,
     int const* __restrict__ d_csr_cols_for_edges,
     int const* __restrict__ d_csr_cols, int const* __restrict__ d_csr_offsets,
-    SetContainsRef set_ref, int* __restrict__ d_results,
-    int* __restrict__ d_G_index, int CHUNK_SIZE, float threshold) {
+    int* __restrict__ d_slots, long long* __restrict__ d_offsets,
+    int* __restrict__ d_results, int* __restrict__ d_G_index, int CHUNK_SIZE,
+    float threshold) {
   const int warp_id = threadIdx.x / 32;
   const int lane_id = threadIdx.x % 32;
   const int num_warps = blockDim.x / 32;
@@ -96,8 +66,8 @@ __global__ void sss_cuco_kernel(
 
       if (active) {
         int key = d_csr_cols[u_neighbour_start + j];
-        auto qk = encode_edge_key(v, key);
-        found = set_ref.contains(qk);
+        // 直接查询v节点的表中是否存在key
+        found = cuco_contains(v, key, d_slots, d_offsets, CucoHash::EMPTY_KEY);
       }
 
       unsigned int found_mask = __ballot_sync(0xffffffff, found);
@@ -144,11 +114,19 @@ std::pair<int, float> run_sss_cuco(
 
   float t_build = 0.0f, t_alloc = 0.0f, t_kernel = 0.0f;
 
-  // 阶段1: 构建cuCollections集合
+  // 阶段1: 构建cuco哈希表
   cudaEventRecord(e1, stream);
-  std::size_t total_edges = csr_cols_host.size();
-  SSSCuCollections sss_cuco(total_edges);
-  sss_cuco.build(csr_offsets_host, csr_cols_host, num_nodes, stream);
+
+  // 计算每个节点的度数
+  std::vector<int> degrees(num_nodes);
+  for (int i = 0; i < num_nodes; i++) {
+    degrees[i] = csr_offsets_host[i + 1] - csr_offsets_host[i];
+  }
+
+  // 创建哈希表并插入
+  CucoHash cuco(num_nodes, degrees, load_factor);
+  cuco.bulk_insert(csr_offsets_host, csr_cols_host, stream);
+
   cudaEventRecord(e2, stream);
   cudaEventSynchronize(e2);
   cudaEventElapsedTime(&t_build, e1, e2);
@@ -169,16 +147,13 @@ std::pair<int, float> run_sss_cuco(
   cudaEventElapsedTime(&t_alloc, e2, e3);
 
   // 阶段3: 查询内核
-  auto contains_ref = sss_cuco.get_contains_ref();
   sss_cuco_kernel<<<grid_size, block_size, 0, stream>>>(
       num_edges, d_vertexs, d_csr_cols_for_edges, d_csr_cols, d_csr_offsets,
-      contains_ref, d_results, d_G_index, CHUNK_SIZE, threshold);
+      cuco.get_device_table(), cuco.get_device_offsets(), d_results, d_G_index,
+      CHUNK_SIZE, threshold);
   cudaEventRecord(e4, stream);
   cudaEventSynchronize(e4);
   cudaEventElapsedTime(&t_kernel, e3, e4);
-
-  printf("[cuCO 细分] 构建: %.3f ms, 分配: %.3f ms, 内核: %.3f ms\n", t_build,
-         t_alloc, t_kernel);
 
   // 读取结果并累加
   std::vector<int> h_results(num_edges);

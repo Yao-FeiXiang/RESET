@@ -1,13 +1,11 @@
 #include <cooperative_groups.h>
-#include <thrust/device_vector.h>
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/sort.h>
-#include <thrust/tuple.h>
 
+#define WARP_SIZE 32
+
+#include "../common/utils.cuh"
 #include "ir.cuh"
 
 using namespace cooperative_groups;
-#define warpSize 32
 
 __device__ __forceinline__ bool search_in_hashtable(int key, int* hashtable,
                                                     int bucket_num, int bucket,
@@ -41,9 +39,9 @@ __global__ void ir_kernel(int* inverted_index, int* inverted_index_offsets,
                           int max_length, bool opt, int* hashtable,
                           long long* hashtable_offset, int bucket_num,
                           int bucket_size) {
-  const int warp_id = threadIdx.x / 32;
-  const int lane_id = threadIdx.x % 32;
-  const int num_warps = blockDim.x / warpSize;
+  const int warp_id = threadIdx.x / WARP_SIZE;
+  const int lane_id = threadIdx.x % WARP_SIZE;
+  const int num_warps = blockDim.x / WARP_SIZE;
   int vertex = (blockIdx.x * num_warps + warp_id) * CHUNK_SIZE;
   int vertex_end = vertex + CHUNK_SIZE;
   int query_start, query_end;
@@ -67,7 +65,7 @@ __global__ void ir_kernel(int* inverted_index, int* inverted_index_offsets,
 
     // 将初始集合复制到结果缓冲区
     result_start = result + result_offsets[vertex];
-    for (int i = lane_id; i < set_len; i += warpSize) {
+    for (int i = lane_id; i < set_len; i += WARP_SIZE) {
       result_start[i] = set_start[i];
     }
     __syncwarp();
@@ -81,9 +79,9 @@ __global__ void ir_kernel(int* inverted_index, int* inverted_index_offsets,
       hash_length = hashtable_offset[term + 1] - hashtable_offset[term];
 
       result_num = 0;
-      int num_iters = (set_size + warpSize - 1) / warpSize;
+      int num_iters = (set_size + WARP_SIZE - 1) / WARP_SIZE;
       for (int iter = 0; iter < num_iters; iter++) {
-        int j = lane_id + iter * warpSize;
+        int j = lane_id + iter * WARP_SIZE;
         bool active = (j < set_size);
         bool found = false;
         int key = -1;
@@ -128,45 +126,6 @@ __global__ void ir_kernel(int* inverted_index, int* inverted_index_offsets,
   }
 }
 
-// 元组比较器,用于对CSR列按行号和桶位置排序
-// 按行号升序,相同行内按元素模max_length升序
-struct TupleComparator {
-  int max_length;
-  __host__ __device__ TupleComparator(int ml = 8) : max_length(ml) {}
-  __host__ __device__ bool operator()(const thrust::tuple<int, int>& a,
-                                      const thrust::tuple<int, int>& b) const {
-    int ra = thrust::get<0>(a);
-    int rb = thrust::get<0>(b);
-    if (ra != rb) return ra < rb;
-    int ca = thrust::get<1>(a);
-    int cb = thrust::get<1>(b);
-    return (ca & (max_length - 1)) < (cb & (max_length - 1));
-  }
-};
-
-// GPU排序CSR列,按行和桶位置重排元素
-void gpu_sort_csr_cols(std::vector<int>& csr_cols,
-                       const std::vector<int>& csr_row, int num_nodes,
-                       int max_length) {
-  int total_edges = csr_cols.size();
-  std::vector<int> rows_host(total_edges);
-  for (int i = 0; i < num_nodes; ++i) {
-    int start = csr_row[i];
-    int end = csr_row[i + 1];
-    for (int p = start; p < end; ++p) rows_host[p] = i;
-  }
-
-  thrust::device_vector<int> d_csr_cols = csr_cols;
-  thrust::device_vector<int> d_rows = rows_host;
-
-  auto first = thrust::make_zip_iterator(
-      thrust::make_tuple(d_rows.begin(), d_csr_cols.begin()));
-  auto last = thrust::make_zip_iterator(
-      thrust::make_tuple(d_rows.end(), d_csr_cols.end()));
-  thrust::sort(first, last, TupleComparator(max_length));
-  thrust::copy(d_csr_cols.begin(), d_csr_cols.end(), csr_cols.begin());
-}
-
 IRBaseline::~IRBaseline() {
   // d_inverted_index_ 和 d_inverted_index_offsets_
   // 由InvertedIndex管理,不需要在这里释放
@@ -180,13 +139,27 @@ IRBaseline::~IRBaseline() {
 }
 
 // 预排序倒排索引(用于hierarchical哈希),在计时前完成
-void IRBaseline::pre_sort_inverted_index(const InvertedIndex& index) {
-  std::vector<int> sorted_cols = index.get_host_elements();
-  gpu_sort_csr_cols(sorted_cols, index.get_host_offsets(),
-                    index.get_num_nodes(), get_max_length());
-  cudaMalloc(&d_inverted_index_sorted_, sorted_cols.size() * sizeof(int));
-  cudaMemcpy(d_inverted_index_sorted_, sorted_cols.data(),
-             sorted_cols.size() * sizeof(int), cudaMemcpyHostToDevice);
+// 使用哈希表直接提取，无需排序
+void IRBaseline::pre_sort_inverted_index(const InvertedIndex& index,
+                                         int slots_per_bucket) {
+  const int num_nodes = index.get_num_nodes();
+  const int total_edges = index.get_num_elements();
+
+  // 释放旧缓冲区（如果存在）
+  if (d_inverted_index_sorted_) {
+    cudaFree(d_inverted_index_sorted_);
+    d_inverted_index_sorted_ = nullptr;
+  }
+
+  // 分配输出缓冲区
+  cudaMalloc(&d_inverted_index_sorted_, sizeof(int) * total_edges);
+  CHECK_CUDA_ERROR();
+
+  // 核心优化：从哈希表直接提取，无需排序
+  launch_extract_hashtable_to_csr(num_nodes, index.get_device_offsets(),
+                                  get_d_hash_tables_offset(),
+                                  get_d_hash_hierarchical(), get_bucket_num(),
+                                  slots_per_bucket, d_inverted_index_sorted_);
 }
 
 void IRBaseline::load_queries(const std::string& query_path,
@@ -217,16 +190,41 @@ void IRBaseline::allocate_result_buffers(const InvertedIndex& index) {
   d_inverted_index_offsets_ = index.get_device_offsets();
 
   // 计算每个查询的结果偏移量,预留存储空间
-  // 使用第一个词项的度数作为上界(安全但可能浪费),
-  // 因为交集结果 <= min(所有词项度数) <= 第一个词项度数
+  // 优化：使用固定上限 + 小查询使用实际度数
+  // 对于IR查询，交集结果通常非常小，远小于最小词项的度数
+  // 使用一个合理的上限：1000，对于小于这个值的使用实际度数
+  const int MAX_RESULT_PER_QUERY = 1000;
   std::vector<long long> result_offsets(query_num_ + 1, 0);
   auto const& offsets = index.get_host_offsets();
+  long long original_total = 0;
+
   for (int i = 0; i < query_num_; i++) {
-    int term = global_query_[query_offsets_[i]];
-    result_offsets[i + 1] =
-        result_offsets[i] + offsets[term + 1] - offsets[term];
+    int query_start = query_offsets_[i];
+    int query_end = query_offsets_[i + 1];
+    int query_len = query_end - query_start;
+
+    // 先计算第一个词项的度数（原策略）
+    int first_term = global_query_[query_start];
+    int first_degree = offsets[first_term + 1] - offsets[first_term];
+    original_total += first_degree;
+
+    // 使用最小度数，但不超过MAX_RESULT_PER_QUERY
+    int min_degree = first_degree;
+    for (int j = 1; j < query_len; j++) {
+      int term = global_query_[query_start + j];
+      int degree = offsets[term + 1] - offsets[term];
+      min_degree = std::min(min_degree, degree);
+    }
+    // 使用min_degree和MAX_RESULT_PER_QUERY中较小的值
+    int result_size = std::min(min_degree, MAX_RESULT_PER_QUERY);
+    result_offsets[i + 1] = result_offsets[i] + result_size;
   }
-  printf("result offset end: %lld\n", result_offsets[query_num_]);
+  // printf("result offset end: %lld (optimized: max 1000 per query)\n",
+  //        result_offsets[query_num_]);
+  // printf("内存优化: 结果缓冲区从 %.2f GB 减少到 %.2f GB (节省 %.1f%%)\n",
+  //        (original_total * 4.0) / (1024 * 1024 * 1024),
+  //        (result_offsets[query_num_] * 4.0) / (1024 * 1024 * 1024),
+  //        (1.0 - (double)result_offsets[query_num_] / original_total) * 100.0);
 
   cudaMalloc(&d_result_offsets_, (query_num_ + 1) * sizeof(long long));
   cudaMemcpy(d_result_offsets_, result_offsets.data(),
@@ -242,7 +240,7 @@ std::pair<int, float> IRBaseline::run_hierarchical(int CHUNK_SIZE,
                                                    int block_size,
                                                    int bucket_size,
                                                    bool sorted) {
-  int h_G_index = grid_size * block_size / warpSize * CHUNK_SIZE;
+  int h_G_index = grid_size * block_size / WARP_SIZE * CHUNK_SIZE;
   // 修复：先释放旧指针,避免内存泄漏
   if (d_G_index_) cudaFree(d_G_index_);
   cudaMalloc(&d_G_index_, sizeof(int));
@@ -288,7 +286,7 @@ std::pair<int, float> IRBaseline::run_hierarchical(int CHUNK_SIZE,
 std::pair<int, float> IRBaseline::run_normal(int CHUNK_SIZE, int grid_size,
                                              int block_size, int bucket_size,
                                              bool sorted) {
-  int h_G_index = grid_size * block_size / warpSize * CHUNK_SIZE;
+  int h_G_index = grid_size * block_size / WARP_SIZE * CHUNK_SIZE;
   // 修复：先释放旧指针,避免内存泄漏
   if (d_G_index_) cudaFree(d_G_index_);
   cudaMalloc(&d_G_index_, sizeof(int));

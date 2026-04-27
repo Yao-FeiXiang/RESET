@@ -126,31 +126,39 @@ def parse_stdout_timing(stdout: str, output_tag: str) -> Optional[float]:
     从标准输出解析特定方法的内核执行时间
     参数:
         stdout: 可执行文件的标准输出
-        output_tag: 方法输出标签,如"普通哈希"
+        output_tag: 方法输出标签,如"Native"
     返回:
         解析得到的执行时间(毫秒),解析失败返回None
     """
-    # 逐行查找匹配
+    time_seconds = parse_stdout_timing_from_output(stdout, output_tag)
+    if time_seconds is not None:
+        return time_seconds
+    print(f"  ⚠  未能找到 {output_tag} 的执行时间")
+    return None
+
+
+def parse_stdout_timing_from_output(stdout: str, output_tag: str) -> Optional[float]:
+    """
+    从标准输出解析特定方法的内核执行时间（内部辅助函数，不打印日志）
+    参数:
+        stdout: 可执行文件的标准输出
+        output_tag: 方法输出标签,如"Native"
+    返回:
+        解析得到的执行时间(毫秒),解析失败返回None
+    """
     lines = stdout.splitlines()
     last_match_time = None
 
     for line in lines:
-        # 只看包含标签的行,并且包含"内核执行时间"
         if f"[{output_tag}]" in line and "内核执行时间" in line:
-            # 使用正则提取冒号后面的浮点数
             match = re.search(r':\s*([0-9.eE+-]+)', line)
             if match:
-                # 不要break,找到最后一个匹配为止
-                # 因为程序会输出前面所有方法的计时,当前方法在最后
                 last_match_time = float(match.group(1))
 
     if last_match_time is not None:
         # C++程序输出单位是秒,转换为毫秒
         time_ms = last_match_time * 1000
-        print(f"  ⏱  解析得到执行时间: {time_ms:.3f} ms")
         return time_ms
-
-    print(f"  ⚠  未能找到 {output_tag} 的执行时间")
     return None
 
 
@@ -188,11 +196,6 @@ def parse_ncu_output(ncu_output: str, metrics_map: Dict[str, str]) -> Dict[str, 
             value = value / 1_000_000.0  # 转换为百万周期
 
         results[metrics_map[metric]] = value
-
-    if results:
-        print(
-            f"  📊 NCU解析结果: { {k: f'{v:.3f}' if isinstance(v, float) else v for k, v in results.items()} }"
-        )
 
     return results
 
@@ -253,9 +256,10 @@ def format_results_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     对单行结果进行数据格式化
     - 时间列(kernel_time_ms): 保留2位小数, gpu_cycles_M: 保留2位小数
-    - L1指标(L1GlobalLoadReq, L1GlobalLoadSectors): 转为整数
-    - 科学计数法列: L1GlobalLoadReq_e6, L1GlobalLoadSectors_e6 (保留2位小数)
+    - L1指标(L1GlobalLoadReq, L1GlobalLoadSectors): 转为整数（原始数值，非科学计数）
     - sector_per_request: 保留2位小数
+
+    注意: 不生成 _e6 科学计数法列，CSV中所有数值使用原始格式
 
     参数:
         row: 单行实验结果
@@ -268,31 +272,30 @@ def format_results_row(row: Dict[str, Any]) -> Dict[str, Any]:
         if val is not None and isinstance(val, (int, float)):
             row[col] = round(val, 2)
 
-    # L1GlobalLoadReq - 原始值转为整数, 添加_e6科学计数法列(保留2位小数)
+    # L1GlobalLoadReq - 原始值转为整数（不进行科学计数转换）
     val = row.get("L1GlobalLoadReq")
     if val is not None and isinstance(val, (int, float)):
         row["L1GlobalLoadReq"] = int(val)
-        row["L1GlobalLoadReq_e6"] = round(val / 1_000_000, 2)
 
-    # L1GlobalLoadSectors - 原始值转为整数, 添加_e6科学计数法列(保留2位小数)
+    # L1GlobalLoadSectors - 原始值转为整数（不进行科学计数转换）
     val = row.get("L1GlobalLoadSectors")
     if val is not None and isinstance(val, (int, float)):
         row["L1GlobalLoadSectors"] = int(val)
-        row["L1GlobalLoadSectors_e6"] = round(val / 1_000_000, 2)
 
     # sector_per_request - 保留2位小数
     val = row.get("sector_per_request")
     if val is not None and isinstance(val, (int, float)):
         row["sector_per_request"] = round(val, 2)
     elif val is not None and isinstance(val, str):
-        # 处理字符串类型
         try:
             row["sector_per_request"] = round(float(val), 2)
         except ValueError:
             row["sector_per_request"] = None
-    # 删除sector_per_request_e0列(如果存在)
-    if "sector_per_request_e0" in row:
-        del row["sector_per_request_e0"]
+
+    # 删除科学计数法列(如果存在)
+    for col in ["sector_per_request_e0", "L1GlobalLoadReq_e6", "L1GlobalLoadSectors_e6"]:
+        if col in row:
+            del row[col]
 
     return row
 
@@ -457,7 +460,7 @@ def print_experiment_summary(config: Dict[str, Any], datasets: List[Path]) -> No
     )
     print(f"  健壮性设置: 超时={timeout}s, 最大重试={max_retries}")
     print(f"  输出目录: {config['app']['output_dir']}")
-    print(f"  日志目录: {config['logging']['log_dir']}")
+    print(f"  日志目录: {config['app']['log_dir']}")
     print("=" * 60 + "\n")
 
 

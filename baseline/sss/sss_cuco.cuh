@@ -29,7 +29,7 @@ std::pair<int, float> run_sss_cuco(
     int const* d_csr_cols_for_edges, int const* d_csr_cols,
     int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
     std::vector<int> const& csr_cols_host, float threshold, int grid_size,
-    int block_size, int CHUNK_SIZE, float load_factor = 0.25,
+    int block_size, int CHUNK_SIZE, float load_factor = 0.2,
     cudaStream_t stream = 0);
 
 #endif  // SSS_CUCO_CUH

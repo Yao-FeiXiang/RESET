@@ -1,66 +1,37 @@
+/**
+ * @file ir_cuco.cu
+ * @brief IR cuCollections基线实现 - 每term版本
+ *
+ * 架构对齐：
+ * - 每term独立哈希表 + 连续存储
+ * - 通过offset寻址
+ * - 与cuckoo、hopscotch等方法保持一致的架构
+ */
+
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
 #include <iostream>
 
-#include "../common/cuco_baseline.cuh"
+#include "../common/cuco.cuh"
 #include "../common/utils.cuh"
 #include "ir_cuco.cuh"
 
 /**
- * @brief IR cuCollections基线类
+ * @brief IR查询内核 - 使用cuco哈希表进行交集查询
  *
- * 继承公共基类,实现IR特有的数据编码和内核启动
+ * 架构变化：不再使用全局表 + 64位(term, doc)编码
+ * 改为直接查询term的哈希表中是否存在doc id
+ *
+ * 对齐：动态负载均衡,warp同步收集结果
  */
-class IRCuCollections : public CuCollectionsStaticSetBase<std::uint64_t> {
- public:
-  using base_type = CuCollectionsStaticSetBase<std::uint64_t>;
-
-  /**
-   * @brief 构造函数
-   * @param total_postings 总posting数量
-   */
-  explicit IRCuCollections(std::size_t total_postings)
-      : base_type(total_postings, 2.0f) {}
-
-  /**
-   * @brief 从主机端倒排索引构建集合
-   * @param offsets 倒排索引偏移数组
-   * @param postings 倒排记录数组
-   * @param inverted_index_num 倒排索引数量
-   * @param stream CUDA流
-   */
-  void build(std::vector<int> const& offsets, std::vector<int> const& postings,
-             int inverted_index_num, cudaStream_t stream = 0) {
-    std::size_t total = postings.size();
-    thrust::host_vector<key_type> h_keys(total);
-
-    // 编码所有(term, doc)对
-    for (int term = 0; term < inverted_index_num; ++term) {
-      int start = offsets[term];
-      int end = offsets[term + 1];
-      for (int p = start; p < end; ++p) {
-        h_keys[p] = encode_posting_key(term, postings[p]);
-      }
-    }
-
-    // 插入键到cuCollections集合
-    insert_keys(h_keys, stream);
-  }
-};
-
-/**
- * @brief IR查询内核 - 使用cuCollections进行交集查询
- * 完全对齐baseline实现：动态负载均衡,warp同步收集结果
- */
-template <typename SetContainsRef>
 __global__ void ir_cuco_kernel(int const* inverted_index,
                                int const* inverted_index_offsets,
                                int const* query, int const* query_offsets,
                                int query_num, int* result,
                                long long const* result_offsets,
                                int* result_count, int* G_index, int CHUNK_SIZE,
-                               SetContainsRef set_ref) {
+                               int* slots, long long* offsets) {
   const int warp_id = threadIdx.x / 32;
   const int lane_id = threadIdx.x % 32;
   const int num_warps = blockDim.x / 32;
@@ -102,8 +73,9 @@ __global__ void ir_cuco_kernel(int const* inverted_index,
         int key = -1;
         if (active) {
           key = set_ptr[j];
-          auto qk = encode_posting_key(current_term, key);
-          found = set_ref.contains(qk);
+          // 直接查询current_term表中是否存在key
+          found = cuco_contains(current_term, key, slots, offsets,
+                                CucoHash::EMPTY_KEY);
         }
         unsigned int mask = __ballot_sync(0xffffffff, found);
         int step_found = __popc(mask);
@@ -139,6 +111,10 @@ __global__ void ir_cuco_kernel(int const* inverted_index,
 /**
  * @brief 主机端启动IR cuCollections查询的接口
  */
+__global__ void warmup_kernel() {
+  // 空 kernel，仅用于设备预热
+}
+
 std::pair<int, float> run_ir_cuco(
     int inverted_index_num, int query_num, int const* d_inverted_index,
     int const* d_inverted_index_offsets, int const* d_query,
@@ -147,17 +123,19 @@ std::pair<int, float> run_ir_cuco(
     int CHUNK_SIZE, std::vector<int> const& inverted_index_offsets_host,
     std::vector<int> const& inverted_index_host, int grid_size, int block_size,
     float load_factor, cudaStream_t stream) {
-  // 构建cuCollections集合
-  std::size_t total_postings = inverted_index_host.size();
-  // std::cout << "准备创建IRCuCollections, 容量: " << total_postings <<
-  // std::endl;
-  IRCuCollections ir_cuco(total_postings);
+  // 设备预热：执行一个空 kernel 来确保 CUDA 上下文完全激活
+  warmup_kernel<<<1, 1, 0, stream>>>();
+  cudaStreamSynchronize(stream);
 
-  ir_cuco.build(inverted_index_offsets_host, inverted_index_host,
-                inverted_index_num, stream);
+  // 构建cuco哈希表
+  std::vector<int> posting_counts(inverted_index_num);
+  for (int i = 0; i < inverted_index_num; i++) {
+    posting_counts[i] =
+        inverted_index_offsets_host[i + 1] - inverted_index_offsets_host[i];
+  }
 
-  // 启动内核
-  auto contains_ref = ir_cuco.get_contains_ref();
+  CucoHash cuco(inverted_index_num, posting_counts, load_factor);
+  cuco.bulk_insert(inverted_index_offsets_host, inverted_index_host, stream);
 
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;
@@ -168,7 +146,7 @@ std::pair<int, float> run_ir_cuco(
   ir_cuco_kernel<<<grid_size, block_size, 0, stream>>>(
       d_inverted_index, d_inverted_index_offsets, d_query, d_query_offsets,
       query_num, d_result, d_result_offsets, d_result_count, d_G_index,
-      CHUNK_SIZE, contains_ref);
+      CHUNK_SIZE, cuco.get_device_table(), cuco.get_device_offsets());
   cudaEventRecord(stop);
   cudaEventSynchronize(stop);
 

@@ -10,9 +10,6 @@
 #include "ir.cuh"
 #include "ir_cuco.cuh"
 
-// 默认使用的GPU设备编号
-#define DEV 0
-
 int main(int argc, char* argv[]) {
   if (argc < 2) {
     std::cerr << "用法: " << argv[0] << " <输入文件夹>" << std::endl;
@@ -38,6 +35,10 @@ int main(int argc, char* argv[]) {
   cudaGetDeviceProperties(&prop, dev);
   printf("使用设备 %d: %s\n", dev, prop.name);
 
+  // 显式激活CUDA上下文，确保后续CUDA操作（包括cuCollections）在正确设备上
+  cudaFree(0);
+  cudaDeviceSynchronize();
+
   std::string input_folder = argv[1];
   float load_factor = 0.2;
   int bucket_size = 5;
@@ -52,12 +53,34 @@ int main(int argc, char* argv[]) {
       load_factor = std::stof(arg.substr(8));
     } else if (arg.rfind("--bucket=", 0) == 0) {
       bucket_size = std::stoi(arg.substr(9));
-    } else if (arg == "--method=cuco") {
+    } else if (arg.rfind("--method=", 0) == 0) {
+      // 重置所有方法为 false
       run_original = false;
-      run_cuco = true;
+      run_cuco = false;
+
+      // 解析逗号分隔的方法列表
+      std::vector<std::string> methods = parse_methods(arg.substr(9));
+      if (methods.empty()) {
+        run_original = true;
+      }
+
+      for (const auto& method : methods) {
+        if (method == "original") {
+          run_original = true;
+        } else if (method == "cuco") {
+          run_cuco = true;
+        } else {
+          std::cerr << "未知方法: " << method << std::endl;
+          std::cerr << "可用方法: original, cuco" << std::endl;
+          return 1;
+        }
+      }
     } else {
       std::cerr << "未知参数: " << arg << std::endl;
-      std::cerr << "可用方法: --method=[original|cuco]" << std::endl;
+      std::cerr << "用法: " << argv[0]
+                << " <输入文件夹> [--alpha=负载因子] [--bucket=桶大小] "
+                   "[--method=original,cuco]"
+                << std::endl;
       return 1;
     }
   }
@@ -85,6 +108,23 @@ int main(int argc, char* argv[]) {
                                             index.get_host_offsets()[i]));
   }
   printf("最大度数: %d\n", max_degree);
+
+  // 估算所需内存并检查
+  int num_nodes = index.get_num_nodes();
+  size_t num_elements = index.get_host_elements().size();
+
+  // 估算哈希表大小 (每个哈希表: bucket_num * bucket_size * 4 bytes)
+  float avg_degree = (float)num_elements / num_nodes;
+  size_t estimated_buckets =
+      (size_t)(num_nodes * avg_degree / load_factor / bucket_size);
+  size_t hash_table_bytes =
+      estimated_buckets * bucket_size * 4 * 2;  // 两个哈希表
+
+  printf("估算哈希表内存: %.2f GB\n",
+         hash_table_bytes / (1024.0 * 1024.0 * 1024.0));
+
+  check_gpu_memory();
+
   // ==================== 构建哈希 ====================
   IRBaseline baseline;
   baseline.build_hash_tables(index.get_num_nodes(), index.get_host_offsets(),
@@ -105,7 +145,8 @@ int main(int argc, char* argv[]) {
   int grid_size = 512;
   int block_size = 1024;
 
-  check_gpu_memory();
+  // 确保CUDA设备上下文已激活（在任何CUDA对象创建之前）
+  cudaDeviceSynchronize();
 
   l2flush flush;
 
@@ -119,10 +160,8 @@ int main(int argc, char* argv[]) {
     printf("[Native] 内核执行时间: %.6f 秒\n", kernel_time_normal / 1000.0);
     printf("[Native] 信息相似度结果数: %d\n", result_normal);
 
-    // 预排序倒排索引(仅用于hierarchical哈希),在计时前完成
-    baseline.pre_sort_inverted_index(index);
+    baseline.pre_sort_inverted_index(index, bucket_size);
 
-    // 分层哈希 (需要排序后的倒排索引)
     flush.flush();
     auto [result_hierarchical, kernel_time_hierarchical] =
         baseline.run_hierarchical(CHUNK_SIZE, grid_size, block_size,
@@ -135,7 +174,13 @@ int main(int argc, char* argv[]) {
 
   // ==================== CUCO ====================
   if (run_cuco) {
+    baseline.free_hash_tables();
     flush.flush();
+
+    if (!run_original) {
+      auto [dummy_result, dummy_time] = baseline.run_normal(
+          CHUNK_SIZE, grid_size, block_size, bucket_size, false);
+    }
 
     // 重置结果缓冲区和G_index
     int h_G_index = grid_size * block_size / 32 * CHUNK_SIZE;
@@ -143,6 +188,8 @@ int main(int argc, char* argv[]) {
                cudaMemcpyHostToDevice);
     cudaMemset(baseline.get_d_result_count(), 0,
                baseline.get_query_num() * sizeof(int));
+
+    cudaDeviceSynchronize();
 
     auto [result_cuco, kernel_time_cuco] = run_ir_cuco(
         index.get_num_nodes(), baseline.get_query_num(),

@@ -15,9 +15,11 @@
 
 /**
  * 设备端哈希函数：将key映射到bucket索引
+ * ✅ 使用统一的standard_hash哈希函数，确保插入和查询完全一致
  */
-__device__ __forceinline__ int compute_hash(int key, int capacity) {
-  return (key * 31 + (key >> 5)) % capacity;
+__device__ __forceinline__ int compute_hash(int key, int node_id,
+                                            int capacity) {
+  return standard_hash(key, node_id, capacity);
 }
 
 /**
@@ -39,29 +41,31 @@ __global__ void hopscotch_bulk_insert_kernel(int* offset, int* table,
   int start = csr_offsets[node_id];
   int end = csr_offsets[node_id + 1];
   int node_start = offset[node_id];
-  int capacity = offset[node_id + 1] - node_start;
+  // ✅ 修正：总容量减去邻域大小H才是实际哈希表容量
+  int total_with_h = offset[node_id + 1] - node_start;
+  int capacity = total_with_h - HopscotchHash::H;
 
   // 只有第一个线程插入,避免竞态
   if (threadIdx.x != 0) return;
 
-  // 初始化该节点的哈希表
-  for (int i = 0; i < capacity; i++) {
+  // 初始化该节点的哈希表（包括邻域H空间）
+  for (int i = 0; i < total_with_h; i++) {
     table[node_start + i] = HopscotchHash::EMPTY_KEY;
   }
-  for (int i = 0; i < capacity; i++) {
+  for (int i = 0; i < total_with_h; i++) {
     bitmap[node_start + i] = 0;
   }
 
   // 顺序插入每个邻接点
   for (int i = start; i < end; i++) {
     int key = csr_cols[i];
-    int home = compute_hash(key, capacity);
+    int home = compute_hash(key, node_id, capacity);
 
     // 尝试在邻域H范围内找到空位
     bool inserted = false;
     for (int j = 0; j < HopscotchHash::H; j++) {
       int pos = home + j;
-      if (pos < capacity &&
+      if (pos < total_with_h &&
           table[node_start + pos] == HopscotchHash::EMPTY_KEY) {
         table[node_start + pos] = key;
         bitmap[node_start + home] |= (1U << j);
@@ -76,13 +80,13 @@ __global__ void hopscotch_bulk_insert_kernel(int* offset, int* table,
     // 只能找home+H之后的空位,因为交换算法只能把空位向左移动
     // 如果空位在home左边,无法通过向左交换移动到home邻域范围
     int empty_pos = home + HopscotchHash::H;
-    while (empty_pos < capacity &&
+    while (empty_pos < total_with_h &&
            table[node_start + empty_pos] != HopscotchHash::EMPTY_KEY) {
       empty_pos++;
     }
 
     // 找不到空位,插入失败
-    if (empty_pos >= capacity) {
+    if (empty_pos >= total_with_h) {
       // 计数在全局失败统计中
       if (threadIdx.x == 0) {
         atomicAdd(d_failed_count, 1);
@@ -165,13 +169,20 @@ __host__ HopscotchHash::HopscotchHash(int num_nodes,
                                       float load_factor)
     : num_nodes_(num_nodes) {
   // 计算每个节点的偏移和总容量
-  // 低负载因子分配足够空间，确保所有哈希碰撞都放得下
+  float actual_load_factor = min(load_factor, 0.1f);
   std::vector<int> offset_host(num_nodes + 1);
   offset_host[0] = 0;
   for (int i = 0; i < num_nodes; i++) {
-    double required = static_cast<double>(degrees[i]) / 0.015;
-    int capacity = static_cast<int>(ceil(required)) + HopscotchHash::H;
-    offset_host[i + 1] = offset_host[i] + capacity;
+    double required = static_cast<double>(degrees[i]) / actual_load_factor;
+    int capacity = 1;
+    while (capacity < required) {
+      capacity <<= 1;
+    }
+    // ✅ 确保capacity至少为H，避免邻域越界
+    if (capacity < HopscotchHash::H) {
+      capacity = HopscotchHash::H;
+    }
+    offset_host[i + 1] = offset_host[i] + capacity + HopscotchHash::H;
   }
   total_capacity_ = offset_host[num_nodes];
 

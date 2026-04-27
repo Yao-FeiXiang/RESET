@@ -26,7 +26,9 @@ class IRBaseline : public HashTableBuilder {
   ~IRBaseline();
 
   // 预排序倒排索引(用于hierarchical哈希),在计时前完成
-  void pre_sort_inverted_index(const InvertedIndex& index);
+  // 使用哈希表直接提取，无需排序
+  void pre_sort_inverted_index(const InvertedIndex& index,
+                               int slots_per_bucket);
 
   // 从文件加载查询数据
   void load_queries(const std::string& query_path,
