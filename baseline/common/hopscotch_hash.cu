@@ -15,7 +15,7 @@
 
 /**
  * 设备端哈希函数：将key映射到bucket索引
- * ✅ 使用统一的standard_hash哈希函数，确保插入和查询完全一致
+ *  ✔ 使用统一的standard_hash哈希函数，确保插入和查询完全一致
  */
 __device__ __forceinline__ int compute_hash(int key, int node_id,
                                             int capacity) {
@@ -41,7 +41,7 @@ __global__ void hopscotch_bulk_insert_kernel(int* offset, int* table,
   int start = csr_offsets[node_id];
   int end = csr_offsets[node_id + 1];
   int node_start = offset[node_id];
-  // ✅ 修正：总容量减去邻域大小H才是实际哈希表容量
+  //  ✔ 修正：总容量减去邻域大小H才是实际哈希表容量
   int total_with_h = offset[node_id + 1] - node_start;
   int capacity = total_with_h - HopscotchHash::H;
 
@@ -178,7 +178,7 @@ __host__ HopscotchHash::HopscotchHash(int num_nodes,
     while (capacity < required) {
       capacity <<= 1;
     }
-    // ✅ 确保capacity至少为H，避免邻域越界
+    //  ✔ 确保capacity至少为H，避免邻域越界
     if (capacity < HopscotchHash::H) {
       capacity = HopscotchHash::H;
     }

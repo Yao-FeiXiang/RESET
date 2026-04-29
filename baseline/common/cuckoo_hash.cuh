@@ -91,7 +91,7 @@ class FlatCuckooHash {
     long long start = offsets[node_id];
     int capacity = static_cast<int>(offsets[node_id + 1] - start);
 
-    // ✅ 使用与插入完全一致的标准哈希函数
+    //  ✔ 使用与插入完全一致的标准哈希函数
     int h1 = standard_hash(key, node_id, capacity);
     int h2 = standard_hash2(key, node_id, capacity);
 

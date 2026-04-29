@@ -7,7 +7,7 @@
   "k_max": 256,
   "convergence": 1e-6,
   "W": 32,
-  "S_trans": 128,
+  "S_trans": 32,
   "S_slot": 4,
   "applications": {
     "sss": {

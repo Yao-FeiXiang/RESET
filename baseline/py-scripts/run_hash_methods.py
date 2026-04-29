@@ -240,7 +240,7 @@ def run_ncu_collection(
 
             if result.returncode == 0:
                 metrics = parse_ncu_output(combined, ncu_config["metrics_map"])
-                print(f"  🚀 方法：{method_name}, NCU采集成功: {metrics}")
+                print(f"  --方法：{method_name}, NCU采集成功: {metrics}")
                 return {"ncu_status": "OK", "metrics": metrics, "retry_count": attempt}
 
             print(f"  ✗ NCU失败(退出码:{result.returncode})")
@@ -375,7 +375,7 @@ def main():
         failed_entries = find_failed_entries(all_results)
 
         if not failed_entries:
-            print("✅ 没有失败条目，所有结果都已成功，无需重跑")
+            print(" ✔ 没有失败条目，所有结果都已成功，无需重跑")
             return
     else:
         print("\n🔄 模式: 全量运行")

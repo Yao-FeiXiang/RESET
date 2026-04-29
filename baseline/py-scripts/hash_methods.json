@@ -75,9 +75,9 @@
     ],
     "//6": "==================== 健壮性配置 ====================",
     "robustness": {
-        "command_timeout_seconds": 180,
+        "command_timeout_seconds": 60,
         "max_retries": 2,
-        "ncu_timeout_multiplier": 5
+        "ncu_timeout_multiplier": 2
     },
     "//7": "==================== CSV 输出配置 ====================",
     "csv_columns": [

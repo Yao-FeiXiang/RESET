@@ -147,7 +147,7 @@ int main(int argc, char* argv[]) {
   // 3. 重排CSR列（初始化d_csr_cols_sorted_供查询使用）
   baseline.reorder_csr_by_hash_layout(graph, bucket_size);
 
-  // ✅ 不运行original方法时，立即释放Native哈希表内存
+  //  ✔ 不运行original方法时，立即释放Native哈希表内存
   if (!run_original) {
     baseline.free_hash_tables();  // 释放~15GB显存
   }
@@ -173,7 +173,7 @@ int main(int argc, char* argv[]) {
   double time_hopscotch = 0;
   double time_roaring = 0;
 
-  check_gpu_memory(2000);  // ✅ 降低内存检查阈值，适用于优化后方法
+  check_gpu_memory();
 
   // 预排序CSR列(用于hierarchical哈希),在计时前完成(与set-similarity-search一致)
   if (run_original) {
@@ -221,9 +221,8 @@ int main(int argc, char* argv[]) {
     }
 
     if (run_cucollections || run_cuckoo || run_hopscotch || run_roaring) {
-      // printf("\n[内存管理] 释放original方法的哈希表内存...\n");
       baseline.free_hash_tables();
-      check_gpu_memory(2000);  // ✅ 降低内存检查阈值
+      check_gpu_memory();
     }
   }
 
@@ -245,9 +244,8 @@ int main(int argc, char* argv[]) {
               << std::endl;
     printf("[cuCollections] 集合相似度结果数: %d\n", result_cuco);
 
-    // 与original结果一致性检查
     if (run_original && result_cuco != result_normal) {
-      printf("\n⚠️  警告: cuCollections与original结果不一致!\n");
+      printf("\n   警告: cuCollections与original结果不一致!\n");
       printf("  original(Native): %d, cuCollections: %d, 差异: %d\n",
              result_normal, result_cuco, std::abs(result_cuco - result_normal));
     }
@@ -273,7 +271,7 @@ int main(int argc, char* argv[]) {
 
     // 与original结果一致性检查
     if (run_original && result_cuckoo != result_normal) {
-      printf("\n⚠️  警告: Cuckoo与original结果不一致!\n");
+      printf("\n   警告: Cuckoo与original结果不一致!\n");
       printf("  original(Native): %d, Cuckoo: %d, 差异: %d\n", result_normal,
              result_cuckoo, std::abs(result_cuckoo - result_normal));
     }
@@ -299,7 +297,7 @@ int main(int argc, char* argv[]) {
 
     // 与original结果一致性检查
     if (run_original && result_hopscotch != result_normal) {
-      printf("\n⚠️  警告: Hopscotch与original结果不一致!\n");
+      printf("\n   警告: Hopscotch与original结果不一致!\n");
       printf("  original(Native): %d, Hopscotch: %d, 差异: %d\n", result_normal,
              result_hopscotch, std::abs(result_hopscotch - result_normal));
     }
@@ -325,7 +323,7 @@ int main(int argc, char* argv[]) {
 
     // 与original结果一致性检查
     if (run_original && result_roaring != result_normal) {
-      printf("\n⚠️  警告: Roaring与original结果不一致!\n");
+      printf("\n   警告: Roaring与original结果不一致!\n");
       printf("  original(Native): %d, Roaring: %d, 差异: %d\n", result_normal,
              result_roaring, std::abs(result_roaring - result_normal));
     }
@@ -343,7 +341,7 @@ int main(int argc, char* argv[]) {
     if (run_roaring && result_roaring != result_normal) all_consistent = false;
 
     if (all_consistent) {
-      printf("  ✅ 所有已运行方法与original(Native)结果一致\n");
+      printf("   ✔ 所有已运行方法与original(Native)结果一致\n");
     } else {
       printf("  ❌ 部分方法与original(Native)结果存在差异,请检查\n");
     }

@@ -149,11 +149,16 @@ def parse_stdout_timing_from_output(stdout: str, output_tag: str) -> Optional[fl
     lines = stdout.splitlines()
     last_match_time = None
 
+    # 使用更健壮的正则表达式，匹配包含标签和时间的多种格式
+    pattern = re.compile(rf'\[{re.escape(output_tag)}\].*内核执行时间.*?([0-9.eE+-]+)')
+
     for line in lines:
-        if f"[{output_tag}]" in line and "内核执行时间" in line:
-            match = re.search(r':\s*([0-9.eE+-]+)', line)
-            if match:
+        match = pattern.search(line)
+        if match:
+            try:
                 last_match_time = float(match.group(1))
+            except ValueError:
+                continue
 
     if last_match_time is not None:
         # C++程序输出单位是秒,转换为毫秒
@@ -434,7 +439,7 @@ def convert_csv_format(
 
     # 保存为新格式
     save_results_to_csv(results, output_csv_path, custom_columns)
-    print(f"✅ 转换完成: {input_csv_path.name} -> {output_csv_path.name}")
+    print(f" ✔ 转换完成: {input_csv_path.name} -> {output_csv_path.name}")
 
 
 def print_experiment_summary(config: Dict[str, Any], datasets: List[Path]) -> None:
@@ -487,7 +492,7 @@ def print_final_summary(results: List[Dict[str, Any]]) -> None:
     success_ncu = sum(1 for r in results if r.get("ncu_status") == "OK")
 
     print("\n" + "=" * 60)
-    print(f"✅ 实验全部完成")
+    print(f" ✔ 实验全部完成")
     print("=" * 60)
     print(f"  总运行次数: {total}")
     print(f"  NCU采集成功: {success_ncu}")

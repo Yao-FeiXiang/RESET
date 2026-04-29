@@ -15,7 +15,7 @@
 
 /**
  * Device 辅助函数：计算key的两个标准哈希位置
- * ✅ 优化：从3个复杂哈希减少到2个简单哈希,统一复杂度
+ *  ✔ 优化：从3个复杂哈希减少到2个简单哈希,统一复杂度
  * - 原: 3 * (3 SHIFT + 2 IMUL + 2 XOR) + node_salt计算 ≈ 20条指令
  * - 新: 2 * (1 XOR + 1 AND) = 4条指令
  * - 哈希开销: -80%
@@ -59,7 +59,7 @@ __global__ void flat_cuckoo_insert_kernel(
   long long start = offsets[node_id];
   int capacity = static_cast<int>(offsets[node_id + 1] - start);
 
-  // ✅ 修复：stash按node_id * STASH_SIZE寻址,与查询保持一致
+  //  ✔ 修复：stash按node_id * STASH_SIZE寻址,与查询保持一致
   long long my_stash_offset =
       static_cast<long long>(node_id) * FlatCuckooHash::STASH_SIZE;
   int* my_stash = stash_data + my_stash_offset;
@@ -76,7 +76,7 @@ __global__ void flat_cuckoo_insert_kernel(
     long long pos1, pos2, pos3;
     compute_hashes(node_id, key, start, capacity, pos1, pos2, pos3);
 
-    // ✅ 修复：首先检查key是否已经存在（处理重复边）
+    //  ✔ 修复：首先检查key是否已经存在（处理重复边）
     // 如果key已经在哈希表中,直接跳过,避免不必要的踢出
     if (table[pos1] == key || table[pos2] == key || table[pos3] == key) {
       continue;
@@ -147,7 +147,7 @@ __global__ void flat_cuckoo_insert_kernel(
 
     if (!inserted) {
       // 踢出失败,尝试放入stash
-      // ✅ 修复：放入的是current_key而不是key！
+      //  ✔ 修复：放入的是current_key而不是key！
       // 经过踢出循环后,我们要放的是最后被踢出来的current_key
       // 而不是最初的key(key已经被放到某个位置了)
       if (my_stash_count < stash_size) {
@@ -219,7 +219,7 @@ FlatCuckooHash::FlatCuckooHash(int num_nodes, const std::vector<int>& degrees,
              cudaMemcpyHostToDevice);
   delete[] h_temp;
 
-  // ✅ 修复：初始化stash数据为EMPTY_KEY,避免随机垃圾值导致false positive
+  //  ✔ 修复：初始化stash数据为EMPTY_KEY,避免随机垃圾值导致false positive
   int* h_stash_temp = new int[total_stash_capacity_];
   for (long long i = 0; i < total_stash_capacity_; i++) {
     h_stash_temp[i] = FlatCuckooHash::EMPTY_KEY;
@@ -228,7 +228,7 @@ FlatCuckooHash::FlatCuckooHash(int num_nodes, const std::vector<int>& degrees,
              cudaMemcpyHostToDevice);
   delete[] h_stash_temp;
 
-  // ✅ 修复：stash_starts初始化为0(表示每个node的stash计数为0),而不是偏移
+  //  ✔ 修复：stash_starts初始化为0(表示每个node的stash计数为0),而不是偏移
   // 之前错误地初始化为 i * STASH_SIZE,导致内核中读取到错误值
   std::vector<long long> h_stash_count(num_nodes + 1, 0);
   cudaMemcpy(d_stash_starts_, h_stash_count.data(),

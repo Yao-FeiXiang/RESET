@@ -79,7 +79,7 @@ class HopscotchHash {
    */
   __device__ bool contains(int node_id, int key) const {
     int node_start = d_offset_[node_id];
-    // ✅ 修正：总容量减去邻域大小H才是实际哈希表容量
+    //  ✔ 修正：总容量减去邻域大小H才是实际哈希表容量
     int total_with_h = d_offset_[node_id + 1] - node_start;
     int capacity = total_with_h - H;
     int home = standard_hash(key, node_id, capacity);
@@ -90,7 +90,7 @@ class HopscotchHash {
       // 提取最低有效位
       int i = __ffs(bm) - 1;
       bm ^= (1U << i);
-      // ✅ 边界检查：确保位置在有效范围内
+      //  ✔ 边界检查：确保位置在有效范围内
       if (home + i < total_with_h) {
         int pos = node_start + home + i;
         if (d_table_[pos] == key) {

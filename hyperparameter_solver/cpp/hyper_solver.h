@@ -29,9 +29,9 @@ struct HyperParams {
 };
 
 struct HardwareConfig {
-  int W = 32;         // warp大小
-  int S_trans = 128;  // 每次事务字节数
-  int S_slot = 4;     // 每个槽字节数
+  int W = 32;        // warp大小
+  int S_trans = 32;  // 每次事务字节数
+  int S_slot = 4;    // 每个槽字节数
 };
 
 /**

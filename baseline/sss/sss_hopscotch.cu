@@ -20,7 +20,7 @@
  * @brief SSS扁平化跳房子哈希查询内核
  * 每个warp处理一个查询对,动态负载均衡
  * 使用每个节点独立哈希表查询
- * ✅ 直接传递设备指针，避免类成员访问的一致性问题
+ *  ✔ 直接传递设备指针，避免类成员访问的一致性问题
  */
 __global__ void sss_hopscotch_kernel(
     int* d_offset, int* d_table, int* d_bitmap, int num_pairs,
