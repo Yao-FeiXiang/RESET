@@ -43,3 +43,6 @@ preprocess_time_proportion/SMOG/data/
 *.txt
 output/
 docs/
+
+graph_datasets/
+ir_datasets/
