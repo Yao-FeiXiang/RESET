@@ -1,5 +1,6 @@
 /**
  * @file cuco.cuh
+ * @brief cuCollections static_set_ref 实现
  */
 
 #ifndef CUCO_CUH
@@ -7,86 +8,48 @@
 
 #include <cuda_runtime.h>
 
-#include <cstdint>
+#include <cuco/bucket_storage.cuh>
+#include <cuco/extent.cuh>
+#include <cuco/hash_functions.cuh>
+#include <cuco/probing_scheme.cuh>
+#include <cuco/static_set_ref.cuh>
 #include <limits>
 #include <vector>
 
 #include "utils.cuh"
 
-/**
- * @brief cuco哈希表(手动实现线性探测)
- *
- * 存储结构：
- *   [offset[0], offset[1], ..., offset[num_nodes+1]]
- *   [node 0's hash table slots ...]
- *   [node 1's hash table slots ...]
- *   ...
- *   [node n's hash table slots ...]
- *
- *   offset[i] 表示第i个节点哈希表的起始位置(单位:slot)
- *   offset[i+1] - offset[i] 就是第i个节点哈希表的容量(slots数)
- *   capacity[i] = next_power_of_two(degree / load_factor)
- */
 class CucoHash {
  public:
   static constexpr int EMPTY_KEY = std::numeric_limits<int>::max();
+  static constexpr int CG_SIZE = 1;
+  static constexpr int BUCKET_SIZE = 1;
 
-  /**
-   * @brief 构造函数
-   * @param num_nodes 节点数量
-   * @param degrees 每个节点的度数(主机端)
-   * @param load_factor 负载因子(默认2.0)
-   */
+  using key_type = int;
+  using hasher = cuco::murmurhash3_fmix_32<key_type>;
+  using probing_scheme = cuco::linear_probing<CG_SIZE, hasher>;
+  using storage_ref_type = cuco::bucket_storage_ref<key_type, BUCKET_SIZE,
+                                                    cuco::extent<std::size_t>>;
+  using ref_type = cuco::static_set_ref<key_type, cuda::thread_scope_device,
+                                        cuda::std::equal_to<key_type>,
+                                        probing_scheme, storage_ref_type>;
+
   CucoHash(int num_nodes, const std::vector<int>& degrees,
            float load_factor = 2.0f);
-
-  /**
-   * @brief 析构函数,释放设备内存
-   */
   ~CucoHash();
 
-  // 禁用拷贝
   CucoHash(const CucoHash&) = delete;
   CucoHash& operator=(const CucoHash&) = delete;
 
-  /**
-   * @brief 批量插入所有节点的邻接点
-   * @param csr_offsets CSR偏移数组(主机端)
-   * @param csr_cols CSR列数组(主机端)
-   * @param stream CUDA流
-   */
   void bulk_insert(const std::vector<int>& csr_offsets,
                    const std::vector<int>& csr_cols,
                    cudaStream_t stream = nullptr);
 
-  /**
-   * @brief 获取设备端扁平哈希表指针
-   * @return 设备端指针
-   */
   int* get_device_table() const { return d_slots_; }
-
-  /**
-   * @brief 获取设备端偏移数组指针
-   * @return 设备端offset指针
-   */
   long long* get_device_offsets() const { return d_offsets_; }
-
-  /**
-   * @brief 获取总容量
-   * @return 总slot数量
-   */
   long long get_total_capacity() const { return total_capacity_; }
-
-  /**
-   * @brief 获取节点数量
-   * @return 节点数
-   */
   int get_num_nodes() const { return num_nodes_; }
 
  private:
-  /**
-   * @brief 向上取整到2的幂次
-   */
   static std::size_t next_power_of_two(std::size_t n) {
     if (n == 0) return 1;
     n--;
@@ -101,34 +64,12 @@ class CucoHash {
 
   int num_nodes_;
   float load_factor_;
-  long long total_capacity_;  // 总slot数
+  long long total_capacity_;
 
-  std::vector<long long> h_offsets_;  // 主机端偏移数组
-
-  int* d_slots_ = nullptr;          // 设备端slot数组
-  long long* d_offsets_ = nullptr;  // 设备端偏移数组
+  std::vector<long long> h_offsets_;
+  int* d_slots_;
+  long long* d_offsets_;
 };
-
-/**
- * @brief 设备端查询辅助函数：检查key是否在指定节点的哈希表中
- *
- * @param node_id 节点ID
- * @param key 要查询的键
- * @param slots 设备端slot数组指针
- * @param offsets 设备端offset数组
- * @param empty_key 空键标记
- * @return true表示存在
- *
- */
-__device__ __forceinline__ std::uint32_t murmur3_32(int key) {
-  std::uint32_t h = static_cast<std::uint32_t>(key);
-  h ^= h >> 16;
-  h *= 0x85ebca6b;
-  h ^= h >> 13;
-  h *= 0xc2b2ae35;
-  h ^= h >> 16;
-  return h;
-}
 
 __device__ __forceinline__ bool cuco_contains(int node_id, int key, int* slots,
                                               long long* offsets,
@@ -138,24 +79,18 @@ __device__ __forceinline__ bool cuco_contains(int node_id, int key, int* slots,
 
   if (capacity == 0) return false;
 
-  // 线性探测 - 与cuCollections保持一致的行为
-  std::uint32_t hash = murmur3_32(key);
-  int probe_count = 0;
-  int mask = capacity - 1;  // capacity是2的幂
+  cuco::extent<std::size_t> extent(capacity / CucoHash::BUCKET_SIZE);
+  CucoHash::storage_ref_type storage_ref(extent, slots + start);
 
-  while (probe_count < capacity) {
-    int pos = (hash + probe_count) & mask;
-    int current = slots[start + pos];
+  CucoHash::probing_scheme probing;
+  cuda::std::equal_to<int> equal;
 
-    if (current == empty_key) {
-      return false;
-    }
-    if (current == key) {
-      return true;
-    }
-    probe_count++;
-  }
-  return false;
+  CucoHash::ref_type ref(cuco::empty_key<int>{empty_key}, equal, probing,
+                         cuco::cuda_thread_scope<cuda::thread_scope_device>{}, storage_ref);
+
+  auto contains_ref = ref.rebind_operators(cuco::op::contains);
+
+  return contains_ref.contains(key);
 }
 
 #endif  // CUCO_CUH

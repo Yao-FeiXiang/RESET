@@ -87,7 +87,8 @@ class IRBaseline : public HashTableBuilder {
 };
 
 // IR搜索内核声明
-__global__ void ir_kernel(int* inverted_index, int* inverted_index_offsets,
+__global__ void ir_kernel(int const* __restrict__ inverted_index,
+                          int const* __restrict__ inverted_index_offsets,
                           int* query, int* query_offsets, int query_num,
                           int* result, long long* result_offsets,
                           int* result_count, int* G_index, int CHUNK_SIZE,

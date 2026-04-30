@@ -66,36 +66,6 @@ def load_config():
     """加载配置"""
     # 应用配置 - 通过 make test-xxx 运行，仅包含 Native, RESET, cuCollections
     apps = {
-        "sss": {
-            "name": "Set Similarity Search",
-            "make_target": "test-sss",
-            "dataset_var": "GRAPH_DATASET_NAME",
-            "dataset_root": "../graph_datasets/",
-            "datasets": ["bm", "gp", "sc18", "sc19", "sc20", "wt"],
-            "methods": [
-                {
-                    "name": "Native",
-                    "tag": "Native",
-                    "kernel_name": "sss_kernel",
-                    "launch_skip": 0,
-                    "launch_count": 1,
-                },
-                {
-                    "name": "RESET",
-                    "tag": "RESET",
-                    "kernel_name": "sss_kernel",
-                    "launch_skip": 1,
-                    "launch_count": 1,
-                },
-                {
-                    "name": "cuCollections",
-                    "tag": "cuCollections",
-                    "kernel_name": "sss_cuco_kernel",
-                    "launch_skip": 0,
-                    "launch_count": 1,
-                },
-            ],
-        },
         "ir": {
             "name": "Information Retrieval",
             "make_target": "test-ir",
@@ -151,6 +121,36 @@ def load_config():
                     "name": "cuCollections",
                     "tag": "cuCollections",
                     "kernel_name": "tc_cuco_kernel",
+                    "launch_skip": 0,
+                    "launch_count": 1,
+                },
+            ],
+        },
+        "sss": {
+            "name": "Set Similarity Search",
+            "make_target": "test-sss",
+            "dataset_var": "GRAPH_DATASET_NAME",
+            "dataset_root": "../graph_datasets/",
+            "datasets": ["bm", "gp", "sc18", "sc19", "sc20", "wt"],
+            "methods": [
+                {
+                    "name": "Native",
+                    "tag": "Native",
+                    "kernel_name": "sss_kernel",
+                    "launch_skip": 0,
+                    "launch_count": 1,
+                },
+                {
+                    "name": "RESET",
+                    "tag": "RESET",
+                    "kernel_name": "sss_kernel",
+                    "launch_skip": 1,
+                    "launch_count": 1,
+                },
+                {
+                    "name": "cuCollections",
+                    "tag": "cuCollections",
+                    "kernel_name": "sss_cuco_kernel",
                     "launch_skip": 0,
                     "launch_count": 1,
                 },
@@ -634,7 +634,7 @@ def generate_latex_from_csv(
 
 
 def print_console_summary(latex_results: Dict, apps_config: Dict):
-    if not results:
+    if not latex_results:
         return "% 无数据"
 
     apps_config = get_apps_config()
@@ -658,7 +658,7 @@ def print_console_summary(latex_results: Dict, apps_config: Dict):
 
     # 生成每个应用的subtable
     for i, app_name in enumerate(apps_to_include):
-        subtable_lines = generate_subtable_for_app(results, app_name, apps_config[app_name])
+        subtable_lines = generate_subtable_for_app(latex_results, app_name, apps_config[app_name])
         lines.extend(subtable_lines)
 
         # 在subtable之间添加\hfill

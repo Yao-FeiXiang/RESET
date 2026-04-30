@@ -177,11 +177,6 @@ int main(int argc, char* argv[]) {
     baseline.free_hash_tables();
     flush.flush();
 
-    if (!run_original) {
-      auto [dummy_result, dummy_time] = baseline.run_normal(
-          CHUNK_SIZE, grid_size, block_size, bucket_size, false);
-    }
-
     // 重置结果缓冲区和G_index
     int h_G_index = grid_size * block_size / 32 * CHUNK_SIZE;
     cudaMemcpy(baseline.get_d_G_index(), &h_G_index, sizeof(int),

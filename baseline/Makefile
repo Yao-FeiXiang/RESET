@@ -1,4 +1,4 @@
-GRAPH_DATASET_NAME = gp #sc18,sc19,sc20,bm,gp,wt
+GRAPH_DATASET_NAME = bm #sc18,sc19,sc20,bm,gp,wt
 IR_DATASET_NAME = ms #ce,fe,hp,lt,ms,nq
 
 # Parallel compilation: use make -jN or set MAKEFLAGS

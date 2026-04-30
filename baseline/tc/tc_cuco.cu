@@ -116,6 +116,9 @@ std::pair<unsigned long long, float> run_tc_cuco(
     int const* d_csr_cols_for_traversal, std::vector<int> const& csr_row_host,
     std::vector<int> const& csr_cols_host, int grid_size, int block_size,
     int CHUNK_SIZE, float load_factor, cudaStream_t stream) {
+  // 统一GPU预热
+  warmup_gpu();
+
   // 分配结果计数空间
   unsigned long long* d_triangle_count;
   cudaMalloc(&d_triangle_count, sizeof(unsigned long long));
@@ -128,7 +131,7 @@ std::pair<unsigned long long, float> run_tc_cuco(
   cudaMemcpyAsync(d_edge_index, &h_edge_index, sizeof(int),
                   cudaMemcpyHostToDevice, stream);
 
-  // 构建cuco哈希表
+  // 构建cuco哈希表（使用原生cuCollections组件）
   std::vector<int> degrees(num_nodes);
   for (int i = 0; i < num_nodes; i++) {
     degrees[i] = csr_row_host[i + 1] - csr_row_host[i];
@@ -136,6 +139,11 @@ std::pair<unsigned long long, float> run_tc_cuco(
 
   CucoHash cuco(num_nodes, degrees, load_factor);
   cuco.bulk_insert(csr_row_host, csr_cols_host, stream);
+
+  // 关键：哈希表构建后刷新L2缓存！
+  // cuco构建过程中大量GPU操作会把哈希表数据留在L2缓存中
+  // 这给cuco带来不公平的缓存优势，必须消除
+  flush_l2_cache();
 
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;

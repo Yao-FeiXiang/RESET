@@ -15,7 +15,6 @@ from typing import Dict, Tuple, Optional
 
 from solver import HyperparameterSolver
 
-
 # ============================================================================
 #                          缓存配置和路径
 # ============================================================================
@@ -23,129 +22,60 @@ from solver import HyperparameterSolver
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "cache")
 CACHE_FILE = os.path.join(CACHE_DIR, "recommended_values.json")
 
-# 常见硬件配置（预计算缓存）- 100+个GPU型号
+
+def get_cache_config() -> Dict:
+    """
+    从config.json加载缓存配置（各参数的常见值列表）
+
+    返回:
+        {
+            "W_values": [...],
+            "S_trans_values": [...],
+            "S_slot_values": [...],
+            "arr_size_values": [...],
+            "mode_values": [...]
+        }
+    """
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        return config.get("cache_config", {})
+    except Exception:
+        # 默认配置
+        return {
+            "W_values": [32],
+            "S_trans_values": [32, 64, 128],
+            "S_slot_values": [4, 8, 16],
+            "arr_size_values": [
+                10_000,
+                50_000,
+                100_000,
+                500_000,
+                1_000_000,
+                2_000_000,
+                5_000_000,
+                10_000_000,
+            ],
+            "mode_values": ["sss", "ir", "tc"],
+        }
+
+
+# 常见GPU硬件配置（用于向后兼容和快速选择）
 COMMON_CONFIGS = {
     # ============== 数据中心/Ampere/Hopper架构 ==============
     "A100": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A100-40GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A100-80GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A100-SXM4": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A100-PCIe": {"W": 32, "S_trans": 128, "S_slot": 4},
     "H100": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "H100-SXM5": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "H100-NVL": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "H100-PCIe": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "H200": {"W": 32, "S_trans": 128, "S_slot": 4},
     "A10": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A10G": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A30": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A2": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A16": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A40": {"W": 32, "S_trans": 128, "S_slot": 4},
     # ============== Volta/Turing 架构 ==============
     "V100": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "V100-16GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "V100-32GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "V100-SXM2": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "V100-PCIe": {"W": 32, "S_trans": 128, "S_slot": 4},
     "T4": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "T4G": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 消费级/专业级 - RTX 40系列 ==============
+    # ============== 消费级 ==============
     "4090": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4090": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4080": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4080": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4080Super": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4070": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4070Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4070Super": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4070TiSuper": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4060": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4060Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4060Ti-8GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4060Ti-16GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "4050": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 消费级/专业级 - RTX 30系列 ==============
     "3090": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX3090": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3090Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3080": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3080Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3070": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3070Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3060": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3060Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "3050": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 消费级/专业级 - RTX 20系列 ==============
-    "2080Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "2080": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "2080Super": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "2070": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "2070Super": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "2060": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "2060Super": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 消费级/专业级 - GTX 10系列 ==============
-    "1080Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1080": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1070Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1070": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1060": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1060-6GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1060-3GB": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1050": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "1050Ti": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 专业级工作站 ==============
-    "RTX6000Ada": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX5000Ada": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4000Ada": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4000SFFAda": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX6000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX5000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX3000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A6000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A5000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A4000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "A2000": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 移动版/笔记本 ==============
-    "RTX4090Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4080Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4070Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4060Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX4050Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX3080Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX3070Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX3060Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "RTX3050Laptop": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 嵌入式/Jetson ==============
-    "JetsonOrin": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "JetsonOrinNX": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "JetsonOrinNano": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "JetsonXavier": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "JetsonXavierNX": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "JetsonNano": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "JetsonTX2": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "JetsonTX1": {"W": 32, "S_trans": 128, "S_slot": 4},
-    # ============== 云计算常用别名 ==============
-    "AWS-G4dn": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "AWS-G5": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "AWS-G6": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "AWS-P3": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "AWS-P4d": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "AWS-P4de": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "AWS-P5": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "GCP-A2": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "GCP-A3": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "GCP-T4": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "GCP-V100": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "Azure-NC": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "Azure-NC24": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "Azure-ND": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "Azure-ND96": {"W": 32, "S_trans": 128, "S_slot": 4},
-    "Azure-NV": {"W": 32, "S_trans": 128, "S_slot": 4},
 }
 
-# 常见数据集规模配置
+# 常见数据集规模配置（用于向后兼容）
 COMMON_DATA_SIZES = {
     "small": [10_000, 50_000, 100_000],
     "medium": [500_000, 1_000_000, 2_000_000],
@@ -246,51 +176,111 @@ class RecommendationCache:
         self.cache[key] = [alpha, b, cost]
         self._save_cache()
 
-    def precompute_common_configs(self) -> None:
-        """为常见硬件配置和数据规模预计算推荐值"""
+    def precompute_common_configs(
+        self,
+        W_values: list = None,
+        S_trans_values: list = None,
+        S_slot_values: list = None,
+        arr_size_values: list = None,
+        mode_values: list = None,
+    ) -> None:
+        """
+        预计算所有参数组合的推荐值（笛卡尔积）
+
+        为每个参数提供常见值列表，然后计算所有组合。
+        例如：
+            W_values = [32]
+            S_trans_values = [32, 64, 128]
+            S_slot_values = [4, 8, 16]
+            arr_size_values = [10000, 100000, 1000000]
+            mode_values = ["sss", "ir", "tc"]
+
+        这样将计算 1×3×3×3×3 = 81 种组合。
+
+        参数:
+            W_values: warp大小的常见值列表
+            S_trans_values: 每次事务字节数的常见值列表
+            S_slot_values: 每个槽字节数的常见值列表
+            arr_size_values: 数组大小的常见值列表
+            mode_values: 应用模式的常见值列表
+        """
+        from itertools import product
+
         config_path = os.path.join(os.path.dirname(__file__), "config.json")
         with open(config_path, "r") as f:
             base_config = json.load(f)
 
-        for gpu_name, hw_params in COMMON_CONFIGS.items():
-            for size_category, sizes in COMMON_DATA_SIZES.items():
-                for arr_size in sizes:
-                    # 检查是否已在缓存中
-                    cached = self.get(
-                        arr_size, hw_params["W"], hw_params["S_trans"], hw_params["S_slot"], "sss"
-                    )
-                    if cached is not None:
-                        print(f"[缓存] 跳过 GPU={gpu_name}, size={arr_size} (已存在)")
-                        continue
+        # 使用默认配置或用户提供的配置
+        cache_config = get_cache_config()
+        W_values = W_values or cache_config.get("W_values", [32])
+        S_trans_values = S_trans_values or cache_config.get("S_trans_values", [32, 64, 128])
+        S_slot_values = S_slot_values or cache_config.get("S_slot_values", [4, 8, 16])
+        arr_size_values = arr_size_values or cache_config.get(
+            "arr_size_values", [10_000, 100_000, 1_000_000]
+        )
+        mode_values = mode_values or cache_config.get("mode_values", ["sss"])
 
-                    print(f"[预计算] GPU={gpu_name}, size={arr_size}...")
+        # 生成所有参数组合（笛卡尔积）
+        all_combinations = list(
+            product(W_values, S_trans_values, S_slot_values, arr_size_values, mode_values)
+        )
+        total_combinations = len(all_combinations)
 
-                    # 构建配置
-                    config = dict(base_config)
-                    config.update(hw_params)
+        print(f"[预计算] 共 {total_combinations} 种参数组合")
+        print(f"  - W_values: {W_values}")
+        print(f"  - S_trans_values: {S_trans_values}")
+        print(f"  - S_slot_values: {S_slot_values}")
+        print(f"  - arr_size_values: {arr_size_values}")
+        print(f"  - mode_values: {mode_values}")
+        print()
 
-                    # 运行求解器
-                    solver = HyperparameterSolver(config, "sss", arr_size=arr_size)
-                    results = solver.solve()
+        skipped = 0
+        computed = 0
 
-                    # 找出最佳值
-                    best = min(results, key=lambda r: r["cost"])
+        for idx, (W, S_trans, S_slot, arr_size, mode) in enumerate(all_combinations, 1):
+            # 检查是否已在缓存中
+            cached = self.get(arr_size, W, S_trans, S_slot, mode)
+            if cached is not None:
+                skipped += 1
+                print(
+                    f"[{idx}/{total_combinations}] 跳过 W={W}, S_trans={S_trans}, S_slot={S_slot}, size={arr_size}, mode={mode} (已缓存)"
+                )
+                continue
 
-                    # 存入缓存
-                    self.put(
-                        arr_size,
-                        hw_params["W"],
-                        hw_params["S_trans"],
-                        hw_params["S_slot"],
-                        float(best["alpha"]),
-                        int(best["b"]),
-                        float(best["cost"]),
-                        "sss",
-                    )
+            print(
+                f"[{idx}/{total_combinations}] 计算 W={W}, S_trans={S_trans}, S_slot={S_slot}, size={arr_size}, mode={mode}..."
+            )
 
-                    print(f"  -> alpha={best['alpha']}, b={best['b']}, cost={best['cost']:.4f}")
+            # 构建配置
+            config = dict(base_config)
+            config["W"] = W
+            config["S_trans"] = S_trans
+            config["S_slot"] = S_slot
 
-        print("[完成] 所有常见配置预计算完成！")
+            # 运行求解器
+            solver = HyperparameterSolver(config, mode, arr_size=arr_size)
+            results = solver.solve()
+
+            # 找出最佳值
+            best = min(results, key=lambda r: r["cost"])
+
+            # 存入缓存
+            self.put(
+                arr_size,
+                W,
+                S_trans,
+                S_slot,
+                float(best["alpha"]),
+                int(best["b"]),
+                float(best["cost"]),
+                mode,
+            )
+
+            computed += 1
+            print(f"  -> alpha={best['alpha']}, b={best['b']}, cost={best['cost']:.4f}")
+
+        print()
+        print(f"[完成] 预计算完成！新增 {computed} 条，跳过 {skipped} 条（已缓存）")
 
     def clear(self) -> None:
         """清空缓存"""

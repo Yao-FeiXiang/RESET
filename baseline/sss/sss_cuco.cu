@@ -106,6 +106,9 @@ std::pair<int, float> run_sss_cuco(
     int const* d_csr_offsets, std::vector<int> const& csr_offsets_host,
     std::vector<int> const& csr_cols_host, float threshold, int grid_size,
     int block_size, int CHUNK_SIZE, float load_factor, cudaStream_t stream) {
+  // 统一GPU预热
+  warmup_gpu();
+
   cudaEvent_t e1, e2, e3, e4;
   cudaEventCreate(&e1);
   cudaEventCreate(&e2);
@@ -123,13 +126,18 @@ std::pair<int, float> run_sss_cuco(
     degrees[i] = csr_offsets_host[i + 1] - csr_offsets_host[i];
   }
 
-  // 创建哈希表并插入
+  // 创建哈希表并插入（使用原生cuCollections组件）
   CucoHash cuco(num_nodes, degrees, load_factor);
   cuco.bulk_insert(csr_offsets_host, csr_cols_host, stream);
 
   cudaEventRecord(e2, stream);
   cudaEventSynchronize(e2);
   cudaEventElapsedTime(&t_build, e1, e2);
+
+  // 关键：哈希表构建后刷新L2缓存！
+  // cuco构建过程中大量GPU操作会把哈希表数据留在L2缓存中
+  // 这给cuco带来不公平的缓存优势，必须消除
+  flush_l2_cache();
 
   // 阶段2: 分配结果数组
   int* d_results = nullptr;

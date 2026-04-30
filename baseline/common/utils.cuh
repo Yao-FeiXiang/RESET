@@ -40,6 +40,72 @@ struct l2flush {
   int l2_size_;
 };
 
+__device__ __forceinline__ void warmup_kernel_d() {}
+
+// 深度预热内核：模拟哈希表构建规模的GPU操作
+static __global__ void deep_warmup_kernel(int* temp_data, long long size) {
+  long long idx = blockIdx.x * 256LL + threadIdx.x;
+  if (idx < size) {
+    // 模拟哈希表初始化和插入操作
+    int val = temp_data[idx];
+    val = val * 3 + 7;       // 一些计算
+    val = (val << 5) ^ val;  // 模拟哈希计算
+    temp_data[idx] = val;
+  }
+}
+
+// L2 缓存刷新内核：通过读取大量数据驱逐现有缓存内容
+static __global__ void flush_l2_cache_kernel(int* __restrict__ flush_buffer,
+                                             long long size) {
+  long long idx = blockIdx.x * 256LL + threadIdx.x;
+  if (idx < size) {
+    volatile int val = const_cast<const volatile int*>(flush_buffer)[idx];
+    (void)val;
+  }
+}
+
+inline void flush_l2_cache(long long flush_size = 100LL * 1024LL *
+                                                  1024LL) {  // 100MB 刷新缓冲区
+  int* d_flush = nullptr;
+  cudaMalloc(&d_flush, flush_size * sizeof(int));
+  cudaMemset(d_flush, 0xCC, flush_size * sizeof(int));  // 写入一些数据
+  cudaDeviceSynchronize();
+
+  // 执行缓存刷新内核
+  long long num_blocks = (flush_size + 256LL - 1) / 256LL;
+  flush_l2_cache_kernel<<<num_blocks, 256>>>(d_flush, flush_size);
+  cudaDeviceSynchronize();
+
+  cudaFree(d_flush);
+  cudaDeviceSynchronize();
+}
+
+inline void warmup_gpu(long long warmup_size = 50LL * 1024LL *
+                                               1024LL) {  // 默认50M 元素预热
+  // 分配临时内存进行深度预热 - 模拟哈希表构建的GPU活动
+  int* d_temp = nullptr;
+  cudaMalloc(&d_temp, warmup_size * sizeof(int));
+
+  // 执行多轮预热内核 - 模拟 cuco 的 initialize_slots_kernel +
+  // node_insert_kernel
+  long long num_blocks = (warmup_size + 256LL - 1) / 256LL;
+
+  // 第一轮：模拟初始化
+  deep_warmup_kernel<<<num_blocks, 256>>>(d_temp, warmup_size);
+  cudaDeviceSynchronize();
+
+  // 第二轮：模拟插入
+  deep_warmup_kernel<<<num_blocks, 256>>>(d_temp, warmup_size);
+  cudaDeviceSynchronize();
+
+  // 第三轮：额外的内存访问预热
+  deep_warmup_kernel<<<num_blocks, 256>>>(d_temp, warmup_size);
+  cudaDeviceSynchronize();
+
+  cudaFree(d_temp);
+  cudaDeviceSynchronize();
+}
+
 // 设备端哈希函数
 __device__ __forceinline__ int d_hash_normal(int x, int length) {
   return x & (length - 1);

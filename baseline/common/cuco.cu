@@ -1,6 +1,6 @@
 /**
  * @file cuco.cu
- * @brief CucoHash实现 - 手动线性探测
+ * @brief 使用 cuCollections 组件的哈希表实现
  */
 
 #include <iostream>
@@ -32,7 +32,6 @@ __global__ void initialize_slots_kernel(int* slots, long long total_slots,
 
 /**
  * @brief 每个节点插入其邻居到自己哈希表的内核
- * 手动线性探测实现
  */
 __global__ void node_insert_kernel(long long* offsets, int* slots,
                                    const int* csr_offsets, const int* csr_cols,
@@ -51,25 +50,19 @@ __global__ void node_insert_kernel(long long* offsets, int* slots,
   const int* neighbors = csr_cols + csr_offsets[node_id];
 
   int mask = capacity - 1;  // capacity是2的幂
+  cuco::murmurhash3_fmix_32<int> hasher;
 
-  // 每个线程负责插入一部分邻居
   for (int i = tid; i < num_neighbors; i += 64) {
     int key = neighbors[i];
-    std::uint32_t hash = murmur3_32(key);
+    std::uint32_t hash = static_cast<std::uint32_t>(hasher(key));
     int probe_count = 0;
 
-    // 线性探测插入
     while (probe_count < capacity) {
       int pos = (hash + probe_count) & mask;
-      int expected = empty_key;
-
-      // CAS确保线程安全
       int* addr = slots + table_start + pos;
-      int old = atomicCAS(addr, expected, key);
+      int old = atomicCAS(addr, empty_key, key);
 
-      if (old == empty_key || old == key) {
-        break;
-      }
+      if (old == empty_key || old == key) break;
       probe_count++;
     }
   }
@@ -78,7 +71,6 @@ __global__ void node_insert_kernel(long long* offsets, int* slots,
 CucoHash::CucoHash(int num_nodes, const std::vector<int>& degrees,
                    float load_factor)
     : num_nodes_(num_nodes), load_factor_(load_factor), total_capacity_(0) {
-  // 计算每个节点的capacity和offset
   h_offsets_.resize(num_nodes_ + 1);
   h_offsets_[0] = 0;
 

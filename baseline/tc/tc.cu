@@ -175,6 +175,9 @@ std::pair<unsigned long long, float> TCBaseline::run_hierarchical(
 
   cudaMemset(d_total_count_, 0, sizeof(unsigned long long));
 
+  // 统一GPU预热
+  warmup_gpu();
+
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -206,6 +209,9 @@ std::pair<unsigned long long, float> TCBaseline::run_normal(
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemset(d_total_count_, 0, sizeof(unsigned long long));
+
+  // 统一GPU预热
+  warmup_gpu();
 
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;

@@ -32,7 +32,8 @@ __device__ __forceinline__ bool search_in_hashtable(int key, int* hashtable,
   return found;
 }
 
-__global__ void ir_kernel(int* inverted_index, int* inverted_index_offsets,
+__global__ void ir_kernel(int const* __restrict__ inverted_index,
+                          int const* __restrict__ inverted_index_offsets,
                           int* query, int* query_offsets, int query_num,
                           int* result, long long* result_offsets,
                           int* result_count, int* G_index, int CHUNK_SIZE,
@@ -46,7 +47,7 @@ __global__ void ir_kernel(int* inverted_index, int* inverted_index_offsets,
   int vertex_end = vertex + CHUNK_SIZE;
   int query_start, query_end;
   int query_len;
-  int* set_start;
+  int const* set_start;
   int set_len;
   int* result_start;
   int* hashtable_start;
@@ -224,7 +225,8 @@ void IRBaseline::allocate_result_buffers(const InvertedIndex& index) {
   // printf("内存优化: 结果缓冲区从 %.2f GB 减少到 %.2f GB (节省 %.1f%%)\n",
   //        (original_total * 4.0) / (1024 * 1024 * 1024),
   //        (result_offsets[query_num_] * 4.0) / (1024 * 1024 * 1024),
-  //        (1.0 - (double)result_offsets[query_num_] / original_total) * 100.0);
+  //        (1.0 - (double)result_offsets[query_num_] / original_total) *
+  //        100.0);
 
   cudaMalloc(&d_result_offsets_, (query_num_ + 1) * sizeof(long long));
   cudaMemcpy(d_result_offsets_, result_offsets.data(),
@@ -248,6 +250,9 @@ std::pair<int, float> IRBaseline::run_hierarchical(int CHUNK_SIZE,
 
   cudaMemset(d_result_count_, 0, query_num_ * sizeof(int));
 
+  // 统一GPU预热
+  warmup_gpu();
+
   // 使用预排序的倒排索引(排序已在计时外完成)
   int* d_inverted_index_ptr =
       sorted ? d_inverted_index_sorted_ : d_inverted_index_;
@@ -259,7 +264,8 @@ std::pair<int, float> IRBaseline::run_hierarchical(int CHUNK_SIZE,
 
   cudaEventRecord(start);
   ir_kernel<<<grid_size, block_size>>>(
-      d_inverted_index_ptr, d_inverted_index_offsets_, d_query_,
+      const_cast<int const*>(d_inverted_index_ptr),
+      const_cast<int const*>(d_inverted_index_offsets_), d_query_,
       d_query_offsets_, query_num_, d_result_, d_result_offsets_,
       d_result_count_, d_G_index_, CHUNK_SIZE, get_max_length(), true,
       get_d_hash_hierarchical(), get_d_hash_tables_offset(), get_bucket_num(),
@@ -294,6 +300,9 @@ std::pair<int, float> IRBaseline::run_normal(int CHUNK_SIZE, int grid_size,
 
   cudaMemset(d_result_count_, 0, query_num_ * sizeof(int));
 
+  // 统一GPU预热
+  warmup_gpu();
+
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -301,10 +310,12 @@ std::pair<int, float> IRBaseline::run_normal(int CHUNK_SIZE, int grid_size,
 
   cudaEventRecord(start);
   ir_kernel<<<grid_size, block_size>>>(
-      d_inverted_index_, d_inverted_index_offsets_, d_query_, d_query_offsets_,
-      query_num_, d_result_, d_result_offsets_, d_result_count_, d_G_index_,
-      CHUNK_SIZE, get_max_length(), false, get_d_hash_normal(),
-      get_d_hash_tables_offset(), get_bucket_num(), bucket_size);
+      const_cast<int const*>(d_inverted_index_),
+      const_cast<int const*>(d_inverted_index_offsets_), d_query_,
+      d_query_offsets_, query_num_, d_result_, d_result_offsets_,
+      d_result_count_, d_G_index_, CHUNK_SIZE, get_max_length(), false,
+      get_d_hash_normal(), get_d_hash_tables_offset(), get_bucket_num(),
+      bucket_size);
   cudaEventRecord(stop);
   cudaEventSynchronize(stop);
 

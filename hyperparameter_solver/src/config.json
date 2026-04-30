@@ -9,6 +9,36 @@
   "W": 32,
   "S_trans": 32,
   "S_slot": 4,
+  "cache_config": {
+    "W_values": [
+      32
+    ],
+    "S_trans_values": [
+      32,
+      64,
+      128
+    ],
+    "S_slot_values": [
+      4,
+      8,
+      16
+    ],
+    "arr_size_values": [
+      10000,
+      50000,
+      100000,
+      500000,
+      1000000,
+      2000000,
+      5000000,
+      10000000
+    ],
+    "mode_values": [
+      "sss",
+      "ir",
+      "tc"
+    ]
+  },
   "applications": {
     "sss": {
       "kernel_dir": "../../set-similarity-search/",

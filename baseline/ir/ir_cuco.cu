@@ -111,10 +111,6 @@ __global__ void ir_cuco_kernel(int const* inverted_index,
 /**
  * @brief 主机端启动IR cuCollections查询的接口
  */
-__global__ void warmup_kernel() {
-  // 空 kernel，仅用于设备预热
-}
-
 std::pair<int, float> run_ir_cuco(
     int inverted_index_num, int query_num, int const* d_inverted_index,
     int const* d_inverted_index_offsets, int const* d_query,
@@ -124,10 +120,9 @@ std::pair<int, float> run_ir_cuco(
     std::vector<int> const& inverted_index_host, int grid_size, int block_size,
     float load_factor, cudaStream_t stream) {
   // 设备预热：执行一个空 kernel 来确保 CUDA 上下文完全激活
-  warmup_kernel<<<1, 1, 0, stream>>>();
-  cudaStreamSynchronize(stream);
+  warmup_gpu();
 
-  // 构建cuco哈希表
+  // 构建cuco哈希表（使用原生cuCollections组件）
   std::vector<int> posting_counts(inverted_index_num);
   for (int i = 0; i < inverted_index_num; i++) {
     posting_counts[i] =
@@ -136,6 +131,11 @@ std::pair<int, float> run_ir_cuco(
 
   CucoHash cuco(inverted_index_num, posting_counts, load_factor);
   cuco.bulk_insert(inverted_index_offsets_host, inverted_index_host, stream);
+
+  // 关键：哈希表构建后刷新L2缓存！
+  // cuco构建过程中大量GPU操作会把哈希表数据留在L2缓存中
+  // 这给cuco带来不公平的缓存优势，必须消除
+  flush_l2_cache();
 
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;

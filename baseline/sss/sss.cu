@@ -36,8 +36,9 @@ __device__ __forceinline__ bool search_in_hashtable(int key, int* hashtable,
   return found;
 }
 
-__global__ void sss_kernel(int num_edges, int* vertexs, int* csr_cols,
-                           int* csr_offsets, int* hash_length, int* hash_table,
+__global__ void sss_kernel(int num_edges, int const* __restrict__ vertexs,
+                           int* csr_cols, int const* __restrict__ csr_offsets,
+                           int const* __restrict__ hash_length, int* hash_table,
                            long long* hash_table_offsets, int* results,
                            int* G_index, int CHUNK_SIZE, bool opt,
                            int max_length, int bucket_num, float threshold,
@@ -175,6 +176,9 @@ std::pair<int, float> SSSBaseline::run_hierarchical(
 
   cudaMemset(d_results_, 0, num_edges_ * sizeof(int));
 
+  // 统一GPU预热
+  warmup_gpu();
+
   // 使用cudaEvent_t进行GPU硬件级计时(最科学严谨)
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
@@ -207,6 +211,9 @@ std::pair<int, float> SSSBaseline::run_normal(CSRGraph& graph, int CHUNK_SIZE,
   cudaMemcpy(d_G_index_, &h_G_index, sizeof(int), cudaMemcpyHostToDevice);
 
   cudaMemset(d_results_, 0, num_edges_ * sizeof(int));
+
+  // 统一GPU预热
+  warmup_gpu();
 
   cudaEvent_t start, stop;
   cudaEventCreate(&start);

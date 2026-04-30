@@ -9,7 +9,7 @@
 """
 
 import argparse
-from c_api import RecommendationCache, _cache, COMMON_CONFIGS, COMMON_DATA_SIZES
+from c_api import RecommendationCache, _cache, COMMON_CONFIGS, COMMON_DATA_SIZES, get_cache_config
 
 
 def show_cache():
@@ -26,39 +26,63 @@ def show_cache():
 
     print("=== 缓存内容 ===")
     print(
-        f"{'序号':<4} {'数组大小':<12} {'W':<4} {'S_trans':<8} {'S_slot':<8} {'alpha':<8} {'b':<4} {'cost':<12}"
+        f"{'序号':<4} {'模式':<5} {'数组大小':<12} {'W':<4} {'S_trans':<8} {'S_slot':<8} {'alpha':<8} {'b':<4} {'cost':<12}"
     )
-    print("-" * 70)
+    print("-" * 90)
 
-    # 从键解析参数
-    import json
-
-    config_path = "config.json"
-    with open(config_path, "r") as f:
-        base_config = json.load(f)
-
-    # 反向查找：遍历所有可能的配置组合
+    # 遍历所有缓存条目
     count = 0
-    for gpu_name, hw_params in COMMON_CONFIGS.items():
-        for size_category, sizes in COMMON_DATA_SIZES.items():
-            for arr_size in sizes:
-                cached = _cache.get(
-                    arr_size, hw_params["W"], hw_params["S_trans"], hw_params["S_slot"], "sss"
-                )
-                if cached is not None:
-                    alpha, b, cost = cached
-                    count += 1
-                    print(
-                        f"{count:<4} {arr_size:<12} {hw_params['W']:<4} {hw_params['S_trans']:<8} {hw_params['S_slot']:<8} {alpha:<8.2f} {b:<4} {cost:<12.4f}"
-                    )
+    # 按键名排序，使输出更有序
+    sorted_keys = sorted(_cache.cache.keys())
+    for key in sorted_keys:
+        alpha, b, cost = _cache.cache[key]
+        # 从键名解析参数（格式：mode_sizeX_WX_TX_SX）
+        parts = key.split("_")
+        mode = parts[0] if parts else "?"
+        arr_size = parts[1].replace("size", "") if len(parts) > 1 else "?"
+        W = parts[2].replace("W", "") if len(parts) > 2 else "?"
+        S_trans = parts[3].replace("T", "") if len(parts) > 3 else "?"
+        S_slot = parts[4].replace("S", "") if len(parts) > 4 else "?"
+
+        count += 1
+        print(
+            f"{count:<4} {mode:<5} {arr_size:<12} {W:<4} {S_trans:<8} {S_slot:<8} {alpha:<8.2f} {b:<4} {cost:<12.4f}"
+        )
 
     print(f"\n总计: {count} 条缓存记录")
 
 
+def parse_list_arg(arg_str: str, item_type: type = int):
+    """解析逗号分隔的列表参数"""
+    if not arg_str:
+        return None
+    arg_str = arg_str.strip()
+    return [item_type(x.strip()) for x in arg_str.split(",") if x.strip()]
+
+
 def main():
-    parser = argparse.ArgumentParser(description="超参数缓存管理工具")
+    parser = argparse.ArgumentParser(
+        description="超参数缓存管理工具 - 支持基于参数值列表的笛卡尔积预计算"
+    )
     parser.add_argument("--show", action="store_true", help="显示缓存内容")
     parser.add_argument("--clear", action="store_true", help="清空缓存")
+
+    # 新的笛卡尔积预计算参数
+    parser.add_argument("--W", type=str, default=None, help="W值列表，逗号分隔 (例如: 32,64)")
+    parser.add_argument(
+        "--S-trans", type=str, default=None, help="S_trans值列表，逗号分隔 (例如: 32,64,128)"
+    )
+    parser.add_argument(
+        "--S-slot", type=str, default=None, help="S_slot值列表，逗号分隔 (例如: 4,8,16)"
+    )
+    parser.add_argument(
+        "--arr-size", type=str, default=None, help="数组大小列表，逗号分隔 (例如: 10000,100000)"
+    )
+    parser.add_argument(
+        "--mode", type=str, default=None, help="应用模式列表，逗号分隔 (例如: sss,ir,tc)"
+    )
+
+    # 向后兼容的GPU参数（旧方式
     parser.add_argument(
         "--gpu", type=str, default="all", help="指定GPU型号 (A100, V100, 3090, 4090, H100)"
     )
@@ -83,8 +107,27 @@ def main():
     print("预计算常见配置的超参数推荐值")
     print("=" * 60)
 
-    if args.gpu != "all" or args.size != "all":
-        # 自定义预计算
+    # 检查是否使用新的笛卡尔积方式
+    use_new_method = any([args.W, args.S_trans, args.S_slot, args.arr_size, args.mode])
+
+    if use_new_method:
+        # 新的笛卡尔积预计算方式
+        W_values = parse_list_arg(args.W) if args.W else None
+        S_trans_values = parse_list_arg(args.S_trans) if args.S_trans else None
+        S_slot_values = parse_list_arg(args.S_slot) if args.S_slot else None
+        arr_size_values = parse_list_arg(args.arr_size) if args.arr_size else None
+        mode_values = parse_list_arg(args.mode, str) if args.mode else None
+
+        print("使用笛卡尔积预计算模式")
+        _cache.precompute_common_configs(
+            W_values=W_values,
+            S_trans_values=S_trans_values,
+            S_slot_values=S_slot_values,
+            arr_size_values=arr_size_values,
+            mode_values=mode_values,
+        )
+    elif args.gpu != "all" or args.size != "all":
+        # 旧的GPU预计算方式（向后兼容）
         import json
 
         config_path = "config.json"
@@ -138,7 +181,8 @@ def main():
 
         print(f"\n完成！新增 {total} 条缓存记录")
     else:
-        # 完整预计算
+        # 默认使用config.json中的配置进行笛卡尔积预计算
+        print("使用config.json中的cache_config配置")
         _cache.precompute_common_configs()
 
     show_cache()

@@ -69,8 +69,9 @@ class SSSBaseline : public HashTableBuilder {
 };
 
 // SSS内核声明
-__global__ void sss_kernel(int num_edges, int* vertexs, int* csr_cols,
-                           int* csr_offsets, int* hash_length, int* hash_table,
+__global__ void sss_kernel(int num_edges, int const* __restrict__ vertexs,
+                           int* csr_cols, int const* __restrict__ csr_offsets,
+                           int const* __restrict__ hash_length, int* hash_table,
                            long long* hash_table_offsets, int* results,
                            int* G_index, int CHUNK_SIZE, bool opt,
                            int max_length, int bucket_num, float threshold,
