@@ -1,4 +1,8 @@
-NVCC = nvcc
+# Host compiler for nvcc (CUDA 12.x supports GCC up to 12). Override if needed:
+#   make GCCBIN=/usr/bin/g++-11
+GCCBIN ?= /usr/bin/g++-12
+NVCC = nvcc -ccbin $(GCCBIN)
+
 TARGET = intersection
 
 # 添加 GPU 架构等编译参数

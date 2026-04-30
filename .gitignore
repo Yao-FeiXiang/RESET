@@ -46,3 +46,5 @@ docs/
 
 graph_datasets/
 ir_datasets/
+
+.venv/

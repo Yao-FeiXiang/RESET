@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <climits>
 #include <fstream>
+#include <cstddef>
 using namespace std;
 
 #define LOAD_FACTOR 0.2
@@ -111,7 +112,8 @@ __device__ bool device_hash_search(int w, int *hashtable, int len, int bucket, i
     {
         for (int i = 0; i < BUCKET_SIZE; i++)
         {
-            int idx = i * bucket_num + bucket;
+            // Use 64-bit index: bucket_num * i can exceed INT_MAX for large tables.
+            size_t idx = static_cast<size_t>(i) * static_cast<size_t>(bucket_num) + static_cast<size_t>(bucket);
             int value = hashtable[idx];
             if (value == w)
                 return true;
@@ -129,13 +131,14 @@ __global__ void make_hashtable_kernel(int* data,int data_size,int*hashtable,int 
     const int warp_id = tid / WARP_SIZE;
     const int warp_tid = threadIdx.x % WARP_SIZE;
     if (warp_id >= NUM_WARP) return;
-    int *hashtable_start = hashtable + warp_id * hash_length;
+    int *hashtable_start = hashtable + static_cast<size_t>(warp_id) * static_cast<size_t>(hash_length);
     for (int i = warp_tid; i < data_size;i+=WARP_SIZE)
     {
         int key=data[i];
         int bucket = d_hash(key, hash_length);
         int k = 0;
-        while (atomicCAS(&hashtable_start[bucket + k * bucket_num], -1, key) != -1)
+        size_t slot = static_cast<size_t>(k) * static_cast<size_t>(bucket_num) + static_cast<size_t>(bucket);
+        while (atomicCAS(hashtable_start + slot, -1, key) != -1)
         {
             k++;
             if (k == BUCKET_SIZE)
@@ -143,6 +146,7 @@ __global__ void make_hashtable_kernel(int* data,int data_size,int*hashtable,int 
                 k = 0;
                 bucket = (bucket + 1) & (hash_length - 1);
             }
+            slot = static_cast<size_t>(k) * static_cast<size_t>(bucket_num) + static_cast<size_t>(bucket);
         }
     }
 }
@@ -156,8 +160,8 @@ __global__ void intersection_kernel(int*a,int a_size,int*hashtable,int hash_leng
     const int warp_tid = threadIdx.x % WARP_SIZE;
     if (warp_id >= NUM_WARP)
         return;
-    int *hashtable_start = hashtable + warp_id * hash_length;
-    int *a_start = a + warp_id * a_size;
+    int *hashtable_start = hashtable + static_cast<size_t>(warp_id) * static_cast<size_t>(hash_length);
+    int *a_start = a + static_cast<size_t>(warp_id) * static_cast<size_t>(a_size);
     int local_count = 0;
     for (int i = warp_tid; i < a_size; i += WARP_SIZE)
     {
@@ -197,7 +201,7 @@ int main(int argc, char *argv[])
         std::swap(a_size, b_size);
     }
     vector<int> b_vec(b_size );
-    memcpy(b_vec.data(), b, sizeof(int) * b_size);
+    memcpy(b_vec.data(), b, static_cast<size_t>(b_size) * sizeof(int));
     int max_length = (int)(b_size / LOAD_FACTOR / BUCKET_SIZE);
     int log = log2f(max_length);
     max_length = powf(2, log) == max_length ? max_length : powf(2, log + 1);
@@ -211,31 +215,36 @@ int main(int argc, char *argv[])
 
     sort(a, a + a_size, cmp);
     // printf("finish sort array a with cmp\n");
-    vector<int> array_normal(a_size * NUM_WARP);
+    const size_t a_replicated_elems = static_cast<size_t>(a_size) * static_cast<size_t>(NUM_WARP);
+    vector<int> array_normal(a_replicated_elems);
     for (int i = 0; i < NUM_WARP; i++)
     {
-        memcpy(&array_normal[i * a_size], a, a_size * sizeof(int));
+        memcpy(&array_normal[static_cast<size_t>(i) * static_cast<size_t>(a_size)], a,
+               static_cast<size_t>(a_size) * sizeof(int));
     }
 
     sort(a,a+a_size,HashModCompare(max_length));
-    vector<int> array_opt(a_size * NUM_WARP);
+    vector<int> array_opt(a_replicated_elems);
     for (int i = 0; i < NUM_WARP; i++)
     {
-        memcpy(&array_opt[i * a_size], a, a_size * sizeof(int));
+        memcpy(&array_opt[static_cast<size_t>(i) * static_cast<size_t>(a_size)], a,
+               static_cast<size_t>(a_size) * sizeof(int));
     }
     // printf("finish sort array a with HashModCompare\n");
 
 
     int bucket_num = max_length * NUM_WARP;
+    const size_t hashtable_bytes =
+        static_cast<size_t>(bucket_num) * static_cast<size_t>(BUCKET_SIZE) * sizeof(int);
     int *d_hashtable;
-    cudaMalloc(&d_hashtable, sizeof(int) * bucket_num * BUCKET_SIZE);
-    cudaMemset(d_hashtable, -1, sizeof(int) * bucket_num * BUCKET_SIZE);
+    cudaMalloc(&d_hashtable, hashtable_bytes);
+    cudaMemset(d_hashtable, -1, hashtable_bytes);
     // int *d_a;
     // cudaMalloc(&d_a, sizeof(int) * a_size * NUM_WARP);
     // cudaMemcpy(d_a, array.data(), sizeof(int) * a_size * NUM_WARP, cudaMemcpyHostToDevice);
     int *d_b;
-    cudaMalloc(&d_b, sizeof(int) * b_size );
-    cudaMemcpy(d_b, b_vec.data(), sizeof(int) * b_size, cudaMemcpyHostToDevice);
+    cudaMalloc(&d_b, static_cast<size_t>(b_size) * sizeof(int));
+    cudaMemcpy(d_b, b_vec.data(), static_cast<size_t>(b_size) * sizeof(int), cudaMemcpyHostToDevice);
 
     // for (int i = 0; i < 16;i++)
     // {
@@ -248,10 +257,11 @@ int main(int argc, char *argv[])
 
     int *d_array_normal;
     int* d_array_opt;
-    cudaMalloc(&d_array_normal, sizeof(int) * a_size * NUM_WARP);
-    cudaMalloc(&d_array_opt, sizeof(int) * a_size * NUM_WARP);
-    cudaMemcpy(d_array_normal, array_normal.data(), sizeof(int) * a_size * NUM_WARP, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_array_opt, array_opt.data(), sizeof(int) * a_size * NUM_WARP, cudaMemcpyHostToDevice);
+    const size_t a_replicated_bytes = a_replicated_elems * sizeof(int);
+    cudaMalloc(&d_array_normal, a_replicated_bytes);
+    cudaMalloc(&d_array_opt, a_replicated_bytes);
+    cudaMemcpy(d_array_normal, array_normal.data(), a_replicated_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_array_opt, array_opt.data(), a_replicated_bytes, cudaMemcpyHostToDevice);
     int *d_result_count;
     cudaMalloc(&d_result_count, sizeof(int));
     cudaMemset(d_result_count, 0, sizeof(int));

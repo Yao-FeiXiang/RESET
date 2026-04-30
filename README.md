@@ -1,7 +1,6 @@
 # RESET
 This is the code for **RESET: A Memory-Efficient Hash-Based Algorithm for Set Operations on GPUs**.
-
-## Organization
+<!-- ## Organization
 
 1. **Preprocessing vs. kernel time**  
    Benchmarks that break down time between preprocessing and GPU kernels.
@@ -22,7 +21,25 @@ This is the code for **RESET: A Memory-Efficient Hash-Based Algorithm for Set Op
    Experiments comparing alternative hash functions.
 
 7. **GPU-specific hyperparameter search**  
-   Utilities to tune hyperparameters for a given GPU.
+   Utilities to tune hyperparameters for a given GPU. -->
 
 ## Environment
-Toolkit 12.2; g++ 12.2.0;
+Toolkit 12.2; g++ 12.2.0; MPICH 4.1.2; Python 3.11.2;
+
+## Dataset 
+
+## Preprocess
+
+## Experiment
+#### 1. Performance Across Applications.
+
+#### 2. SMOG subgraph matching & preprocessing time test
+
+#### 3. Hash-function comparisons
+
+#### 4. Impact of Set Size
+
+#### 5. Multi-GPU Speedup
+
+#### 6. GPU-specific hyperparameter search
+

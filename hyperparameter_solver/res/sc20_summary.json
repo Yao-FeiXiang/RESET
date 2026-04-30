@@ -1,0 +1,43 @@
+{
+  "dataset": "sc20",
+  "csv_path": "/data3/fxyao/RESET/hyperparameter_solver/src/../res/sc20.csv",
+  "total_rows": 342,
+  "N": {
+    "best_config": {
+      "alpha": 0.2,
+      "b": 5,
+      "cost": 4.007358,
+      "table_type": "N",
+      "kernel_time": null,
+      "load_sectors": null
+    },
+    "statistics": {
+      "cost": {
+        "mean": 52631592.95832243,
+        "std": 223296874.96702316,
+        "min": 4.007358,
+        "max": 1000000000.0,
+        "median": 8.587087
+      }
+    }
+  },
+  "H": {
+    "best_config": {
+      "alpha": 0.2,
+      "b": 5,
+      "cost": 4.007358,
+      "table_type": "H",
+      "kernel_time": null,
+      "load_sectors": null
+    },
+    "statistics": {
+      "cost": {
+        "mean": 52631592.95832243,
+        "std": 223296874.96702316,
+        "min": 4.007358,
+        "max": 1000000000.0,
+        "median": 8.587087
+      }
+    }
+  }
+}
